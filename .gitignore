@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local outputs
+logs/
+results.md
+results.html
+
+# OS/Editor
+.DS_Store
+.vscode/
+.idea/
