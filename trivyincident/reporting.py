@@ -552,7 +552,7 @@ def write_results_html(
         "</th>"
         "<th>Repository</th><th>Run</th><th>Workflow</th><th>Usage Type</th>"
         "<th>Trivy Details</th><th>IOC Match</th><th>Severity</th><th>Severity Trigger</th>"
-        "<th>Log Path</th><th>Evidence Snippet</th>"
+        "<th>Evidence Snippet</th>"
         + _log_view_col
         + "</tr></thead>"
     )
@@ -566,7 +566,6 @@ def write_results_html(
     for finding in findings_sorted:
         repo_link = f'<a href="{html.escape(repo_url(finding.repository))}">{html.escape(finding.repository)}</a>'
         run_link = f'<a href="{html.escape(run_url(finding.repository, finding.run_id))}">{finding.run_id}</a>'
-        log_link = f'<a href="{html.escape(finding.log_path)}">{html.escape(finding.log_path)}</a>'
         run_time_value = finding.run_time_utc or ""
         matched_window = finding_exposure_match(finding)
         has_ioc = bool(finding.ioc_match)
@@ -588,7 +587,6 @@ def write_results_html(
             + td(f'<span class="dt-red">{html.escape(finding.ioc_match)}</span>' if finding.ioc_match else "")
             + td(_severity_badge(finding.severity))
             + td(html.escape(finding.severity_trigger))
-            + td(log_link)
             + f'<td class="snippet-cell">{format_evidence_snippet_html(finding)}</td>'
             + log_view_td
             + "</tr>"
