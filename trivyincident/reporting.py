@@ -568,7 +568,8 @@ def write_results_html(
         log_link = f'<a href="{html.escape(finding.log_path)}">{html.escape(finding.log_path)}</a>'
         run_time_value = finding.run_time_utc or ""
         matched_window = finding_exposure_match(finding)
-        row_class = ' class="row-exposed"' if matched_window else ""
+        has_ioc = bool(finding.ioc_match)
+        row_class = ' class="row-exposed"' if (matched_window or has_ioc) else ""
         log_view_td = ""
         if log_html_root:
             repo_name = finding.repository.split("/", 1)[1]
@@ -583,7 +584,7 @@ def write_results_html(
             + td(html.escape(finding.workflow))
             + td(html.escape(finding.usage_type))
             + td(format_trivy_details_html(finding))
-            + td(html.escape(finding.ioc_match))
+            + td(f'<span class="dt-red">{html.escape(finding.ioc_match)}</span>' if finding.ioc_match else "")
             + td(_severity_badge(finding.severity))
             + td(html.escape(finding.severity_trigger))
             + td(log_link)
