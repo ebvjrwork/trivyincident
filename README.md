@@ -20,7 +20,8 @@
 ## What it does
 
 - Enumerates repositories and workflow runs in a UTC time window.
-- Downloads workflow run logs for each run (with fallback retrieval path).
+- Downloads workflow run logs in parallel (up to 5 concurrent workers) with GitHub API rate-limit awareness.
+- Automatically updates IOC databases from the upstream repository before scanning.
 - Parses logs for Trivy-related activity:
   - GitHub Action usage (`aquasecurity/trivy-action`, `aquasecurity/setup-trivy`)
   - APT installation usage
@@ -57,7 +58,7 @@
 
 ## IOC databases
 
-Place/update IOC files in `db/`:
+IOC files in `db/` are **automatically updated** from the upstream repository before each scan. To skip the update, pass `--no-update`.
 
 - `workflow-sha.db` (or fallback `workflow_shas.db`)
 - `binary-sha256.db` (or fallback `binary_sha256.db`)
@@ -105,6 +106,7 @@ python3 trivyincident.py \
 | `--include-archived` | off | Include archived repos |
 | `--max-repos N` | 0 (all) | Limit repository scan count |
 | `--skip-run-listing` | off | Scan existing local logs, skip GitHub API |
+| `--no-update` | off | Skip auto-updating IOC databases from upstream |
 
 ## How findings are determined
 
@@ -167,7 +169,7 @@ python3 -m unittest discover -s tests -v
 
 ## Typical incident workflow
 
-1. Update IOC DB files in `db/`.
+1. IOC databases auto-update from upstream (or update manually in `db/`).
 2. Run live scan over incident window.
 3. Review `results/results.html` sorted by run time.
 4. Triage `CRITICAL` and `HIGH` first.

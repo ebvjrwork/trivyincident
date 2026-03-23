@@ -15,7 +15,7 @@ from trivyincident.github_ops import (
     list_repos,
     list_runs_in_window,
 )
-from trivyincident.indicators import load_indicator_sets
+from trivyincident.indicators import load_indicator_sets, update_indicator_dbs
 from trivyincident.log_parser import (
     extract_first_log_timestamp_from_file,
     extract_workflow_name_from_file,
@@ -90,7 +90,16 @@ def main() -> int:
         action="store_true",
         help="Scan existing logs in --logs-root and skip GitHub repository/run listing",
     )
+    parser.add_argument(
+        "--no-update",
+        action="store_true",
+        help="Skip auto-updating indicator DB files from upstream before scanning",
+    )
     args = parser.parse_args()
+
+    if not args.no_update:
+        print("updating indicator databases...", flush=True)
+        update_indicator_dbs(args.db_root)
 
     workflow_iocs, binary_iocs, network_iocs = load_indicator_sets(args.db_root)
     set_indicator_sets(workflow_iocs, binary_iocs, network_iocs)
