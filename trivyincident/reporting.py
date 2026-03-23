@@ -480,7 +480,8 @@ def write_results_html(
     P.append('  <div class="ioc-sources">IOC sources: '
              '<a href="https://socket.dev/supply-chain-attacks/trivy-github-actions-compromise">socket.dev</a>, '
              '<a href="https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack">wiz.io</a>, '
-             '<a href="https://github.com/aquasecurity/trivy/discussions/10425">aquasecurity/trivy#10425</a></div>')
+             '<a href="https://github.com/aquasecurity/trivy/discussions/10425">aquasecurity/trivy#10425</a>, '
+             '<a href="https://ramimac.me/trivy-teampcp/#iocs">ramimac.me</a></div>')
 
     # Exposure windows reference table
     P.append('  <h2>Exposure Windows</h2>')

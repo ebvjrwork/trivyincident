@@ -3,6 +3,7 @@
 # - https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack
 # - https://github.com/aquasecurity/trivy/discussions/10425#discussioncomment-16258390
 # - https://github.com/aquasecurity/trivy/discussions/10425#discussioncomment-16261683
+# - https://ramimac.me/trivy-teampcp/#iocs
 
 0880819ef821cff918960a39c1c1aada55a5593c61c608ea9215da858a86e349
 6328a34b26a63423b555a61f89a6a0525a534e9c88584c815d937910f1ddd538

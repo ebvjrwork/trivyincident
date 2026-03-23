@@ -1,7 +1,11 @@
 # Source references:
 # - https://socket.dev/supply-chain-attacks/trivy-github-actions-compromise
 # - https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack
-#
+# - https://ramimac.me/trivy-teampcp/#iocs
+
+# actions/checkout
+70379aad1a8b40919ce8b382d3cd7d0315cde1d0
+
 # aquasecurity/setup-trivy
 384add36b52014a0f99c0ab3a3d58bd47e53d00f
 386c0f18ac3d7f2ed33e2d884761119f4024ff8a
@@ -87,3 +91,9 @@ fa4209b6182a4c1609ce34d40b67f5cfd7f00f53
 fa78e67c0df002c509bcdea88677fb5e2fe6a9b1
 fd090040b5f584f4fcbe466878cb204d0735dcf4
 fd429cf86db999572f3d9ca7c54561fdf7d388a4
+1885610c6a34811c8296416ae69f568002ef11ec
+
+# Lateral movement commits (via aqua-bot)
+a67fd5b5b119
+56591dfe113b
+93ed41111017c3767fafc7d9cc8711f3be1a661f

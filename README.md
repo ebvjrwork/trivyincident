@@ -7,6 +7,7 @@
 - https://github.com/aquasecurity/trivy/discussions/10425
 - https://socket.dev/supply-chain-attacks/trivy-github-actions-compromise
 - https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack
+- https://ramimac.me/trivy-teampcp/#iocs
 
 ## Exposure windows
 
