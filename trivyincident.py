@@ -19,7 +19,7 @@ from trivyincident.log_parser import (
     set_indicator_sets,
 )
 from trivyincident.models import Finding, RunInfo
-from trivyincident.reporting import write_flags_file, write_results_html, write_results_md
+from trivyincident.reporting import write_flags_file, write_results_html, write_log_html
 
 
 def to_iso_utc(value: str) -> str:
@@ -67,11 +67,20 @@ def main() -> int:
     parser.add_argument("--start", required=True, help="UTC ISO time, example 2026-03-19T00:00:00Z")
     parser.add_argument("--end", required=True, help="UTC ISO time, example 2026-03-21T20:00:00Z")
     parser.add_argument("--logs-root", default="logs")
-    parser.add_argument("--report", default="results.md")
-    parser.add_argument("--html-report", default="")
+    parser.add_argument("--results-dir", default="results", help="Output directory for the HTML report and log HTMLs (default: results/)")
     parser.add_argument("--db-root", default="db")
     parser.add_argument("--include-archived", action="store_true")
     parser.add_argument("--max-repos", type=int, default=0)
+    parser.add_argument(
+        "--generate-log-html",
+        action="store_true",
+        help="Generate per-finding annotated HTML log files with evidence highlighted",
+    )
+    parser.add_argument(
+        "--log-html-root",
+        default="",
+        help="Output directory for per-finding log HTML files (default: <results-dir>/logs/)",
+    )
     parser.add_argument(
         "--skip-run-listing",
         action="store_true",
@@ -139,30 +148,28 @@ def main() -> int:
         if finding:
             findings.append(finding)
 
-    write_results_md(
-        output_path=args.report,
-        org=args.org,
-        start_iso=start_iso,
-        end_iso=end_iso,
-        repos_scanned=repos_scanned,
-        total_runs=len(all_runs),
-        downloaded=downloaded,
-        skipped_existing=skipped_existing,
-        failed=failures,
-        findings=findings,
-        all_runs=all_runs,
-    )
+    results_dir = args.results_dir.strip() or "results"
+    html_report_path = os.path.join(results_dir, "results.html")
 
-    html_report_path = args.html_report.strip() if args.html_report else ""
-    if not html_report_path:
-        base, _ = os.path.splitext(args.report)
-        html_report_path = f"{base}.html"
+    # Optionally generate per-finding annotated log HTML files
+    log_html_root: str = ""
+    if args.generate_log_html:
+        log_html_root = args.log_html_root.strip()
+        if not log_html_root:
+            log_html_root = os.path.join(results_dir, "logs")
+        generated_log_htmls = 0
+        for finding in findings:
+            repo_name = finding.repository.split("/", 1)[1]
+            out_html = os.path.join(log_html_root, repo_name, f"{finding.run_id}.html")
+            write_log_html(finding.log_path, finding, out_html)
+            generated_log_htmls += 1
+        print(f"log htmls generated: {generated_log_htmls} files in {log_html_root}")
 
     write_results_html(
         output_path=html_report_path,
         org=args.org,
-        start_iso=start_iso,
-        end_iso=end_iso,
+        run_start_iso=start_iso,
+        run_end_iso=end_iso,
         repos_scanned=repos_scanned,
         total_runs=len(all_runs),
         downloaded=downloaded,
@@ -170,6 +177,7 @@ def main() -> int:
         failed=failures,
         findings=findings,
         all_runs=all_runs,
+        log_html_root=log_html_root if args.generate_log_html else None,
     )
 
     flags_file = os.path.join(args.logs_root, "flags.txt")
@@ -179,7 +187,6 @@ def main() -> int:
         f"completed: repos={repos_scanned} runs={len(all_runs)} downloaded_new={downloaded} "
         f"reused_existing={skipped_existing} findings={len(findings)}"
     )
-    print(f"report: {args.report}")
     print(f"html report: {html_report_path}")
     print(f"flags: {flags_file}")
     return 0

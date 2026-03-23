@@ -2,7 +2,7 @@ import html
 import os
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .models import Finding, RunInfo, SEVERITY_RANK
 
@@ -97,6 +97,17 @@ def finding_exposure_match(finding: Finding) -> bool:
     return start_dt <= run_dt <= end_dt
 
 
+def run_in_any_exposure_window(ts: str) -> Optional[str]:
+    """Return the first exposure window name the timestamp falls in, or None."""
+    dt = _parse_utc_iso(ts)
+    if dt is None:
+        return None
+    for name, (start, end) in EXPOSURE_WINDOWS.items():
+        if start <= dt <= end:
+            return name
+    return None
+
+
 def maybe_red_md(value: str, should_highlight: bool) -> str:
     return red_md(value) if should_highlight and value else value
 
@@ -104,6 +115,63 @@ def maybe_red_md(value: str, should_highlight: bool) -> str:
 def maybe_red_html(value: str, should_highlight: bool) -> str:
     escaped = html.escape(value)
     return f'<span class="dt-red">{escaped}</span>' if should_highlight and value else escaped
+
+
+def format_evidence_snippet_html(finding: Finding) -> str:
+    """Return a highlighted HTML block for the evidence snippet."""
+    if not finding.evidence_snippet:
+        return ""
+    versions = [v.strip() for v in (finding.version or "").split(",") if v.strip()]
+    parts: List[str] = []
+    for segment in finding.evidence_snippet.split(" || "):
+        segment = segment.strip()
+        if not segment:
+            continue
+        esc = html.escape(segment)
+        # Highlight action refs (before trivy keyword so 'trivy' inside isn't double-wrapped)
+        esc = re.sub(
+            r"(?i)(aquasecurity/(?:trivy-action|setup-trivy)@[A-Za-z0-9._/\-]+)",
+            r'<span class="evidence-hit">\1</span>',
+            esc,
+        )
+        # Highlight version numbers
+        for v in versions:
+            if v:
+                esc = esc.replace(html.escape(v), f'<span class="evidence-hit">{html.escape(v)}</span>')
+        # Highlight SHA-40 / SHA-64 hashes
+        esc = re.sub(r"([0-9a-f]{40,64})", r'<span class="evidence-hit">\1</span>', esc, flags=re.IGNORECASE)
+        # Highlight 'trivy' keyword where not already inside a span
+        esc = re.sub(r"(?i)\b(trivy)\b", r'<span class="evidence-hit">\1</span>', esc)
+        parts.append(f'<div class="ev-seg">{esc}</div>')
+    return "\n".join(parts)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Per-log HTML helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+_LOG_SECTION_HEADER_RE = re.compile(r"^=====\s+(.+?)\s+=====$")
+_LOG_ANSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+_LOG_TS_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\b")
+
+
+def _highlight_log_line_html(raw_line: str, versions: List[str]) -> str:
+    """Strip ANSI codes, HTML-escape, then apply inline evidence highlighting."""
+    clean = _LOG_ANSI_RE.sub("", raw_line.rstrip())
+    result = html.escape(clean)
+    # Action refs first (contain 'trivy', handle before the trivy keyword sweep)
+    result = re.sub(
+        r"(?i)(aquasecurity/(?:trivy-action|setup-trivy)@[A-Za-z0-9._/\-]+)",
+        r'<span class="hl-action">\1</span>',
+        result,
+    )
+    # Version numbers
+    for v in versions:
+        if v:
+            result = result.replace(html.escape(v), f'<span class="hl-version">{html.escape(v)}</span>')
+    # Trivy keyword
+    result = re.sub(r"(?i)\b(trivy)\b", r'<span class="hl-trivy">\1</span>', result)
+    return result
 
 
 def format_trivy_details_markdown(finding: Finding) -> str:
@@ -191,130 +259,11 @@ def format_trivy_details_html(finding: Finding) -> str:
     return html.escape(finding.trivy_details or finding.version or "")
 
 
-def write_results_md(
-    output_path: str,
-    org: str,
-    start_iso: str,
-    end_iso: str,
-    repos_scanned: int,
-    total_runs: int,
-    downloaded: int,
-    skipped_existing: int,
-    failed: List[Dict[str, str]],
-    findings: List[Finding],
-    all_runs: List[RunInfo],
-) -> None:
-    findings_sorted = sorted(findings, key=lambda f: (-SEVERITY_RANK[f.severity], f.repository, f.run_id))
-    findings_by_run: Dict[Tuple[str, int], Finding] = {(f.repository, f.run_id): f for f in findings_sorted}
-    failed_runs: Set[Tuple[str, int]] = {(item["repo"], int(item["run_id"])) for item in failed}
-    daily: Dict[str, Dict[str, int]] = {}
-    for item in findings_sorted:
-        day = item.run_time_utc[:10] if item.run_time_utc else "unknown"
-        if day not in daily:
-            daily[day] = {"total": 0, "action": 0, "apt": 0, "high": 0, "critical": 0}
-        daily[day]["total"] += 1
-        if item.usage_type == "action":
-            daily[day]["action"] += 1
-        if item.usage_type == "apt":
-            daily[day]["apt"] += 1
-        if item.severity == "HIGH":
-            daily[day]["high"] += 1
-        if item.severity == "CRITICAL":
-            daily[day]["critical"] += 1
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("# trivyincident Scan Results\n\n")
-        f.write(f"- Organization: {org}\n")
-        f.write(f"- Window (UTC): {start_iso} to {end_iso}\n")
-        f.write(f"- Repositories scanned: {repos_scanned}\n")
-        f.write(f"- Runs in window: {total_runs}\n")
-        f.write(f"- Logs downloaded (new): {downloaded}\n")
-        f.write(f"- Logs reused (already existed): {skipped_existing}\n")
-        f.write(f"- Log download failures: {len(failed)}\n")
-        f.write("- IOC sources: https://socket.dev/supply-chain-attacks/trivy-github-actions-compromise, https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack\n\n")
-
-        f.write("## Daily Summary\n\n")
-        f.write("| Date (UTC) | Trivy Findings | GitHub Actions Usage | APT Usage | HIGH | CRITICAL |\n")
-        f.write("| --- | --- | --- | --- | --- | --- |\n")
-        for day in sorted(daily.keys()):
-            entry = daily[day]
-            f.write(
-                f"| {day} | {entry['total']} | {entry['action']} | {entry['apt']} | {entry['high']} | {entry['critical']} |\n"
-            )
-        f.write("\n")
-
-        headers = [
-            "Date (UTC)",
-            "Repository",
-            "Run",
-            "Run Time (UTC)",
-            "Workflow",
-            "Usage Type",
-            "Trivy Details (Version + SHA)",
-            "IOC Match",
-            "Severity",
-            "Severity Trigger",
-            "Log Path",
-            "Evidence Snippet",
-        ]
-        f.write("## Findings\n\n")
-        f.write("| " + " | ".join(headers) + " |\n")
-        f.write("| " + " | ".join(["---"] * len(headers)) + " |\n")
-        for finding in findings_sorted:
-            repo_link = f"[{finding.repository}]({repo_url(finding.repository)})"
-            run_link = f"[{finding.run_id}]({run_url(finding.repository, finding.run_id)})"
-            log_link = f"[{finding.log_path}]({finding.log_path})"
-            matched_window = finding_exposure_match(finding)
-            row = [
-                maybe_red_md(finding.run_time_utc[:10] if finding.run_time_utc else "", matched_window),
-                repo_link,
-                run_link,
-                maybe_red_md(finding.run_time_utc, matched_window),
-                finding.workflow,
-                finding.usage_type,
-                format_trivy_details_markdown(finding),
-                finding.ioc_match,
-                finding.severity,
-                finding.severity_trigger,
-                log_link,
-                finding.evidence_snippet,
-            ]
-            f.write("| " + " | ".join(escape_md(x) for x in row) + " |\n")
-
-        f.write("\n## All Scanned Runs\n\n")
-        f.write("| Date (UTC) | Repository | Run | Workflow | Status | Conclusion | Log Collected | Trivy Detected | Severity |\n")
-        f.write("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
-        for run in sorted(all_runs, key=lambda r: (r.created_at, r.repo, r.run_id)):
-            key = (run.repo, run.run_id)
-            finding = findings_by_run.get(key)
-            matched_window = finding_exposure_match(finding) if finding else False
-            row = [
-                maybe_red_md(run.created_at[:10] if run.created_at else "", matched_window),
-                f"[{run.repo}]({repo_url(run.repo)})",
-                f"[{run.run_id}]({run_url(run.repo, run.run_id)})",
-                run.workflow_name,
-                run.status,
-                run.conclusion,
-                "yes" if key not in failed_runs else "no",
-                "yes" if finding else "no",
-                finding.severity if finding else "",
-            ]
-            f.write("| " + " | ".join(escape_md(x) for x in row) + " |\n")
-
-        flagged = [x for x in findings_sorted if x.severity in {"CRITICAL", "HIGH"}]
-        f.write("\n## Flagged Items\n\n")
-        if flagged:
-            for item in flagged:
-                f.write(f"- {item.severity} {item.repository} run {item.run_id} ({item.usage_type}) {item.log_path}\n")
-        else:
-            f.write("- None\n")
-
-
 def write_results_html(
     output_path: str,
     org: str,
-    start_iso: str,
-    end_iso: str,
+    run_start_iso: str,
+    run_end_iso: str,
     repos_scanned: int,
     total_runs: int,
     downloaded: int,
@@ -322,6 +271,7 @@ def write_results_html(
     failed: List[Dict[str, str]],
     findings: List[Finding],
     all_runs: List[RunInfo],
+    log_html_root: Optional[str] = None,
 ) -> None:
     findings_sorted = sorted(findings, key=lambda f: (-SEVERITY_RANK[f.severity], f.repository, f.run_id))
     findings_by_run: Dict[Tuple[str, int], Finding] = {(f.repository, f.run_id): f for f in findings_sorted}
@@ -331,12 +281,14 @@ def write_results_html(
     for item in findings_sorted:
         day = item.run_time_utc[:10] if item.run_time_utc else "unknown"
         if day not in daily:
-            daily[day] = {"total": 0, "action": 0, "apt": 0, "high": 0, "critical": 0}
+            daily[day] = {"total": 0, "action": 0, "apt": 0, "container": 0, "high": 0, "critical": 0}
         daily[day]["total"] += 1
         if item.usage_type == "action":
             daily[day]["action"] += 1
         if item.usage_type == "apt":
             daily[day]["apt"] += 1
+        if item.usage_type == "container":
+            daily[day]["container"] += 1
         if item.severity == "HIGH":
             daily[day]["high"] += 1
         if item.severity == "CRITICAL":
@@ -344,120 +296,327 @@ def write_results_html(
 
     flagged = [x for x in findings_sorted if x.severity in {"CRITICAL", "HIGH"}]
 
-    def td(value: str) -> str:
-        return f"<td>{value}</td>"
+    n_critical = sum(1 for f in findings_sorted if f.severity == "CRITICAL")
+    n_high = sum(1 for f in findings_sorted if f.severity == "HIGH")
 
-    html_parts: List[str] = []
-    html_parts.append("<!doctype html>")
-    html_parts.append('<html lang="en">')
-    html_parts.append("<head>")
-    html_parts.append('  <meta charset="utf-8">')
-    html_parts.append('  <meta name="viewport" content="width=device-width, initial-scale=1">')
-    html_parts.append("  <title>trivyincident Scan Results</title>")
-    html_parts.append("  <style>")
-    html_parts.append("    body { font-family: Arial, sans-serif; margin: 20px; color: #111; }")
-    html_parts.append("    h1, h2 { margin: 0 0 12px 0; }")
-    html_parts.append("    ul { margin-top: 0; }")
-    html_parts.append("    table { border-collapse: collapse; width: 100%; margin: 12px 0 24px 0; }")
-    html_parts.append("    th, td { border: 1px solid #ddd; padding: 8px; font-size: 13px; vertical-align: top; }")
-    html_parts.append("    th { background: #f5f5f5; text-align: left; }")
-    html_parts.append("    tr:nth-child(even) { background: #fafafa; }")
-    html_parts.append("    .sort-btn { border: 1px solid #ccc; background: #fff; margin-left: 4px; padding: 0 6px; font-size: 11px; line-height: 18px; cursor: pointer; }")
-    html_parts.append("    .dt-red { color: #c00; font-weight: 600; }")
-    html_parts.append("  </style>")
-    html_parts.append("</head>")
-    html_parts.append("<body>")
-    html_parts.append("  <h1>trivyincident Scan Results</h1>")
-    html_parts.append("  <ul>")
-    html_parts.append(f"    <li>Organization: {html.escape(org)}</li>")
-    html_parts.append(f"    <li>Window (UTC): {html.escape(start_iso)} to {html.escape(end_iso)}</li>")
-    html_parts.append(f"    <li>Repositories scanned: {repos_scanned}</li>")
-    html_parts.append(f"    <li>Runs in window: {total_runs}</li>")
-    html_parts.append(f"    <li>Logs downloaded (new): {downloaded}</li>")
-    html_parts.append(f"    <li>Logs reused (already existed): {skipped_existing}</li>")
-    html_parts.append(f"    <li>Log download failures: {len(failed)}</li>")
-    html_parts.append(
-        "    <li>IOC sources: "
-        '<a href="https://socket.dev/supply-chain-attacks/trivy-github-actions-compromise">socket.dev</a>, '
-        '<a href="https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack">wiz.io</a></li>'
-    )
-    html_parts.append("  </ul>")
+    def td(value: str, cls: str = "") -> str:
+        attr = f' class="{cls}"' if cls else ""
+        return f"<td{attr}>{value}</td>"
 
-    html_parts.append("  <h2>Daily Summary</h2>")
-    html_parts.append("  <table>")
-    html_parts.append("    <thead><tr><th>Date (UTC)</th><th>Trivy Findings</th><th>GitHub Actions Usage</th><th>APT Usage</th><th>HIGH</th><th>CRITICAL</th></tr></thead>")
-    html_parts.append("    <tbody>")
+    CSS = """
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      --brand:   #1a56db;
+      --brand-dk:#1340a8;
+      --danger:  #c0392b;
+      --warn:    #d97706;
+      --ok:      #16a34a;
+      --bg:      #f8fafc;
+      --surface: #ffffff;
+      --border:  #e2e8f0;
+      --text:    #0f172a;
+      --muted:   #64748b;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5;
+    }
+    /* ── top nav bar ── */
+    .topbar {
+      background: var(--brand); color: #fff; padding: 0 28px;
+      display: flex; align-items: center; gap: 12px; height: 52px;
+      box-shadow: 0 2px 6px rgba(0,0,0,.18);
+    }
+    .topbar-logo { font-size: 20px; font-weight: 700; letter-spacing: -.5px; }
+    .topbar-sub  { font-size: 13px; opacity: .8; }
+    /* ── page wrapper ── */
+    .page { max-width: 1600px; margin: 0 auto; padding: 28px 28px 60px; }
+    /* ── meta cards (summary row) ── */
+    .meta-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 12px; margin: 24px 0;
+    }
+    .meta-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    }
+    .meta-card .mc-label { font-size: 11px; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted); margin-bottom: 4px; }
+    .meta-card .mc-value { font-size: 22px; font-weight: 700; line-height: 1.1; }
+    .mc-danger .mc-value { color: var(--danger); }
+    .mc-warn   .mc-value { color: var(--warn); }
+    .mc-ok     .mc-value { color: var(--ok); }
+    /* ── section headings ── */
+    h2 { font-size: 17px; font-weight: 700; margin: 32px 0 10px; padding-bottom: 6px;
+         border-bottom: 2px solid var(--brand); color: var(--brand-dk); }
+    h2:first-of-type { margin-top: 0; }
+    /* ── info block (org / window) ── */
+    .info-block {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px 20px; display: flex; flex-wrap: wrap;
+      gap: 8px 32px; font-size: 13px; margin-bottom: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    }
+    .info-block .ib-item { display: flex; flex-direction: column; }
+    .info-block .ib-label { font-size: 11px; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--muted); }
+    .info-block .ib-value { font-weight: 600; }
+    /* ── legend ── */
+    .legend { font-size: 12px; color: var(--muted); margin-bottom: 10px; display: flex; gap: 16px; flex-wrap: wrap; }
+    .legend-swatch { display: inline-block; width: 12px; height: 12px;
+      vertical-align: middle; margin-right: 4px; border-radius: 2px; }
+    /* ── tables ── */
+    .tbl-wrap { overflow-x: auto; border-radius: 8px;
+      border: 1px solid var(--border); margin-bottom: 28px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+    table { border-collapse: collapse; width: 100%; background: var(--surface); }
+    thead th {
+      background: #f1f5f9; font-size: 12px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .05em;
+      padding: 10px 12px; border-bottom: 2px solid var(--border);
+      white-space: nowrap; text-align: left; position: sticky; top: 0;
+    }
+    tbody td { padding: 8px 12px; font-size: 13px; vertical-align: top;
+               border-bottom: 1px solid var(--border); }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: #f0f7ff !important; }
+    /* ── row severity colouring ── */
+    tr.row-exposed td { background: #fff0f0 !important; border-left: 3px solid var(--danger); }
+    tr.row-in-window td { background: #fffbeb !important; border-left: 3px solid var(--warn); }
+    /* ── sort buttons ── */
+    .sort-btn {
+      border: none; background: transparent; cursor: pointer; padding: 0 3px;
+      color: #94a3b8; font-size: 11px; line-height: 1; vertical-align: middle;
+    }
+    .sort-btn:hover { color: var(--brand); }
+    /* ── severity badges ── */
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 9999px;
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    }
+    .badge-critical { background: #fee2e2; color: #991b1b; }
+    .badge-high     { background: #ffedd5; color: #9a3412; }
+    .badge-medium   { background: #fef9c3; color: #713f12; }
+    .badge-low      { background: #dcfce7; color: #14532d; }
+    .badge-info     { background: #dbeafe; color: #1e40af; }
+    /* ── dt-red ── */
+    .dt-red { color: var(--danger); font-weight: 600; }
+    /* ── evidence snippet ── */
+    .snippet-cell {
+      font-family: "SFMono-Regular", "Cascadia Code", Menlo, monospace;
+      font-size: 11px; word-break: break-all; max-width: 440px;
+    }
+    .ev-seg { padding: 2px 0; border-bottom: 1px dotted #e2e8f0; }
+    .ev-seg:last-child { border-bottom: none; }
+    .evidence-hit {
+      background: #fecaca; color: #7f1d1d; font-weight: 700;
+      padding: 1px 4px; border-radius: 3px;
+    }
+    /* ── links ── */
+    a { color: var(--brand); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    a.log-view { font-size: 11px; white-space: nowrap; }
+    /* ── flagged list ── */
+    .flagged-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+    .flagged-list li {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 14px; font-size: 13px;
+      display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+    }
+    .fl-repo { font-weight: 600; }
+    .fl-meta { color: var(--muted); font-size: 12px; }
+    /* ── ioc sources ── */
+    .ioc-sources { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    /* ── footer ── */
+    .site-footer {
+      margin-top: 48px; padding: 20px 0; border-top: 1px solid var(--border);
+      font-size: 12px; color: var(--muted); text-align: center;
+    }
+    .site-footer a { color: var(--brand); }
+    """
+
+    P: List[str] = []
+    P.append("<!doctype html>")
+    P.append('<html lang="en">')
+    P.append("<head>")
+    P.append('  <meta charset="utf-8">')
+    P.append('  <meta name="viewport" content="width=device-width, initial-scale=1">')
+    P.append("  <title>trivyincident &mdash; Scan Results</title>")
+    P.append(f"  <style>{CSS}</style>")
+    P.append("</head>")
+    P.append("<body>")
+
+    # Top bar
+    P.append('  <div class="topbar">')
+    P.append('    <a href="https://github.com/ebvjrwork/trivyincident" class="topbar-logo" style="color:#fff;text-decoration:none">trivyincident</a>')
+    P.append("  </div>")
+
+    P.append('  <div class="page">')
+
+    # Info block
+    P.append('  <div class="info-block">')
+    P.append(f'    <div class="ib-item"><span class="ib-label">Organization</span><span class="ib-value">{html.escape(org)}</span></div>')
+    P.append(f'    <div class="ib-item"><span class="ib-label">Run Start (UTC)</span><span class="ib-value">{html.escape(run_start_iso)}</span></div>')
+    P.append(f'    <div class="ib-item"><span class="ib-label">Run End (UTC)</span><span class="ib-value">{html.escape(run_end_iso)}</span></div>')
+    P.append("  </div>")
+
+    # Summary cards
+    P.append('  <div class="meta-grid">')
+    cards = [
+        ("Repositories", str(repos_scanned), ""),
+        ("Runs in window", str(total_runs), ""),
+        ("Findings", str(len(findings_sorted)), "mc-warn" if findings_sorted else "mc-ok"),
+        ("CRITICAL", str(n_critical), "mc-danger" if n_critical else ""),
+        ("HIGH", str(n_high), "mc-warn" if n_high else ""),
+        ("Logs new", str(downloaded), ""),
+        ("Logs reused", str(skipped_existing), ""),
+        ("Failures", str(len(failed)), "mc-danger" if failed else "mc-ok"),
+    ]
+    for label, val, cls in cards:
+        card_cls = f"meta-card {cls}".strip()
+        P.append(f'    <div class="{card_cls}"><div class="mc-label">{label}</div><div class="mc-value">{val}</div></div>')
+    P.append("  </div>")
+
+    P.append('  <div class="ioc-sources">IOC sources: '
+             '<a href="https://socket.dev/supply-chain-attacks/trivy-github-actions-compromise">socket.dev</a>, '
+             '<a href="https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack">wiz.io</a>, '
+             '<a href="https://github.com/aquasecurity/trivy/discussions/10425">aquasecurity/trivy#10425</a></div>')
+
+    # Exposure windows reference table
+    P.append('  <h2>Exposure Windows</h2>')
+    P.append('  <div class="tbl-wrap"><table>')
+    P.append('    <thead><tr>'
+             '<th>Component</th><th>Affected versions</th><th>NOT affected</th>'
+             '<th>Exposure window (UTC)</th><th>Duration</th></tr></thead>')
+    P.append('    <tbody>')
+    P.append('      <tr>'
+             '<td><strong>trivy</strong></td>'
+             '<td>v0.69.4 (latest tag also pointed to v0.69.4). GHCR, ECR&nbsp;Public, Docker&nbsp;Hub, deb, rpm, get.trivy.dev.</td>'
+             '<td>1)&nbsp;v0.69.3 or earlier<br>2)&nbsp;Container images referenced by digest</td>'
+             '<td>2026-03-19 18:22 &ndash; ~21:42</td>'
+             '<td>~3&nbsp;hours</td></tr>')
+    P.append('      <tr>'
+             '<td><strong>trivy-action</strong></td>'
+             '<td>1)&nbsp;All tags prior to 0.35.0<br>2)&nbsp;Explicitly requesting <code>version:&nbsp;latest</code> (not the default) during the trivy exposure window</td>'
+             '<td>1)&nbsp;@0.35.0<br>2)&nbsp;SHA-pinned references since 2025-04-09</td>'
+             '<td>2026-03-19 ~17:43 &ndash; 2026-03-20 ~05:40</td>'
+             '<td>~12&nbsp;hours</td></tr>')
+    P.append('      <tr>'
+             '<td><strong>setup-trivy</strong></td>'
+             '<td>All releases</td>'
+             '<td>SHA-pinned references</td>'
+             '<td>2026-03-19 ~17:43 &ndash; ~21:44</td>'
+             '<td>~4&nbsp;hours</td></tr>')
+    P.append('    </tbody>')
+    P.append('  </table></div>')
+
+    # Daily summary
+    P.append("  <h2>Daily Summary</h2>")
+    P.append('  <div class="tbl-wrap"><table>')
+    P.append("    <thead><tr><th>Date (UTC)</th><th>Trivy Findings</th><th>GitHub Actions Usage</th><th>APT Usage</th><th>Container Usage</th><th>HIGH</th><th>CRITICAL</th></tr></thead>")
+    P.append("    <tbody>")
     for day in sorted(daily.keys()):
         entry = daily[day]
-        html_parts.append(
+        P.append(
             "      <tr>"
             + td(html.escape(day))
             + td(str(entry["total"]))
             + td(str(entry["action"]))
             + td(str(entry["apt"]))
+            + td(str(entry["container"]))
             + td(str(entry["high"]))
             + td(str(entry["critical"]))
             + "</tr>"
         )
-    html_parts.append("    </tbody>")
-    html_parts.append("  </table>")
+    P.append("    </tbody>")
+    P.append("  </table></div>")
 
-    html_parts.append("  <h2>Findings</h2>")
-    html_parts.append('  <table id="findings-table">')
-    html_parts.append(
-        "    <thead><tr>"
-        "<th>Date (UTC)"
-        "<button type=\"button\" class=\"sort-btn\" onclick=\"sortFindingsBy(0, true)\" title=\"Sort date ascending\">▲</button>"
-        "<button type=\"button\" class=\"sort-btn\" onclick=\"sortFindingsBy(0, false)\" title=\"Sort date descending\">▼</button>"
-        "</th><th>Repository</th><th>Run</th><th>Run Time (UTC)"
-        "<button type=\"button\" class=\"sort-btn\" onclick=\"sortFindingsBy(3, true)\" title=\"Sort run time ascending\">▲</button>"
-        "<button type=\"button\" class=\"sort-btn\" onclick=\"sortFindingsBy(3, false)\" title=\"Sort run time descending\">▼</button>"
-        "</th><th>Workflow</th><th>Usage Type</th>"
-        "<th>Trivy Details (Version + SHA)</th><th>IOC Match</th><th>Severity</th><th>Severity Trigger</th><th>Log Path</th><th>Evidence Snippet</th>"
-        "</tr></thead>"
+    # Findings table
+    P.append("  <h2>Findings</h2>")
+    P.append(
+        "  <div class=\"legend\">"
+        "<span><span class='legend-swatch' style='background:#fee2e2;border-left:3px solid #c0392b'></span>"
+        "<strong>Red row</strong>: run time in Trivy supply-chain exposure window (Trivy detected)</span>"
+        "<span><span class='legend-swatch' style='background:#fffbeb;border-left:3px solid #d97706'></span>"
+        "<strong>Amber row</strong> (All Scanned Runs): run time in exposure window, no Trivy detected</span>"
+        "</div>"
     )
-    html_parts.append("    <tbody>")
+    _log_view_col = "<th>Log View</th>" if log_html_root else ""
+    P.append('  <div class="tbl-wrap"><table id="findings-table">')
+    P.append(
+        "    <thead><tr>"
+        "<th>Run Time (UTC)"
+        '<button type="button" class="sort-btn" onclick="sortFindingsBy(0,true)" title="Ascending">▲</button>'
+        '<button type="button" class="sort-btn" onclick="sortFindingsBy(0,false)" title="Descending">▼</button>'
+        "</th>"
+        "<th>Repository</th><th>Run</th><th>Workflow</th><th>Usage Type</th>"
+        "<th>Trivy Details</th><th>IOC Match</th><th>Severity</th><th>Severity Trigger</th>"
+        "<th>Log Path</th><th>Evidence Snippet</th>"
+        + _log_view_col
+        + "</tr></thead>"
+    )
+    P.append("    <tbody>")
+
+    def _severity_badge(sev: str) -> str:
+        cls = {"CRITICAL": "badge-critical", "HIGH": "badge-high",
+               "MEDIUM": "badge-medium", "LOW": "badge-low"}.get(sev.upper(), "badge-info")
+        return f'<span class="badge {cls}">{html.escape(sev)}</span>'
+
     for finding in findings_sorted:
         repo_link = f'<a href="{html.escape(repo_url(finding.repository))}">{html.escape(finding.repository)}</a>'
         run_link = f'<a href="{html.escape(run_url(finding.repository, finding.run_id))}">{finding.run_id}</a>'
         log_link = f'<a href="{html.escape(finding.log_path)}">{html.escape(finding.log_path)}</a>'
-        date_value = finding.run_time_utc[:10] if finding.run_time_utc else ""
         run_time_value = finding.run_time_utc or ""
         matched_window = finding_exposure_match(finding)
-        html_parts.append(
-            "      <tr>"
-            + f'<td data-sort-value="{html.escape(date_value)}">{maybe_red_html(date_value, matched_window)}</td>'
+        row_class = ' class="row-exposed"' if matched_window else ""
+        log_view_td = ""
+        if log_html_root:
+            repo_name = finding.repository.split("/", 1)[1]
+            log_html_path = os.path.join(log_html_root, repo_name, f"{finding.run_id}.html")
+            rel = os.path.relpath(log_html_path, os.path.dirname(os.path.abspath(output_path)))
+            log_view_td = f'<td><a class="log-view" href="{html.escape(rel)}">view log ↗</a></td>'
+        P.append(
+            f"      <tr{row_class}>"
+            + f'<td data-sort-value="{html.escape(run_time_value)}">{maybe_red_html(run_time_value, matched_window)}</td>'
             + td(repo_link)
             + td(run_link)
-            + f'<td data-sort-value="{html.escape(run_time_value)}">{maybe_red_html(run_time_value, matched_window)}</td>'
             + td(html.escape(finding.workflow))
             + td(html.escape(finding.usage_type))
             + td(format_trivy_details_html(finding))
             + td(html.escape(finding.ioc_match))
-            + td(html.escape(finding.severity))
+            + td(_severity_badge(finding.severity))
             + td(html.escape(finding.severity_trigger))
             + td(log_link)
-            + td(html.escape(finding.evidence_snippet))
+            + f'<td class="snippet-cell">{format_evidence_snippet_html(finding)}</td>'
+            + log_view_td
             + "</tr>"
         )
-    html_parts.append("    </tbody>")
-    html_parts.append("  </table>")
+    P.append("    </tbody>")
+    P.append("  </table></div>")
 
-    html_parts.append("  <h2>All Scanned Runs</h2>")
-    html_parts.append("  <table>")
-    html_parts.append(
-        "    <thead><tr><th>Date (UTC)</th><th>Repository</th><th>Run</th><th>Workflow</th><th>Status</th><th>Conclusion</th><th>Log Collected</th><th>Trivy Detected</th><th>Severity</th></tr></thead>"
+    # All scanned runs
+    P.append("  <h2>All Scanned Runs</h2>")
+    P.append('  <div class="tbl-wrap"><table>')
+    P.append(
+        "    <thead><tr>"
+        "<th>Run Time (UTC)</th><th>Repository</th><th>Run</th>"
+        "<th>Workflow</th><th>Status</th><th>Conclusion</th>"
+        "<th>Log Collected</th><th>Trivy Detected</th><th>Severity</th>"
+        "</tr></thead>"
     )
-    html_parts.append("    <tbody>")
+    P.append("    <tbody>")
     for run in sorted(all_runs, key=lambda r: (r.created_at, r.repo, r.run_id)):
         key = (run.repo, run.run_id)
         finding = findings_by_run.get(key)
         matched_window = finding_exposure_match(finding) if finding else False
+        in_window_name = run_in_any_exposure_window(run.created_at) if not matched_window and run.created_at else None
+        row_class = ' class="row-exposed"' if matched_window else (' class="row-in-window"' if in_window_name else "")
         repo_link = f'<a href="{html.escape(repo_url(run.repo))}">{html.escape(run.repo)}</a>'
         run_link = f'<a href="{html.escape(run_url(run.repo, run.run_id))}">{run.run_id}</a>'
-        html_parts.append(
-            "      <tr>"
-            + td(maybe_red_html(run.created_at[:10] if run.created_at else "", matched_window))
+        sev_cell = _severity_badge(finding.severity) if finding and finding.severity else ""
+        P.append(
+            f"      <tr{row_class}>"
+            + td(maybe_red_html(run.created_at if run.created_at else "", matched_window))
             + td(repo_link)
             + td(run_link)
             + td(html.escape(run.workflow_name))
@@ -465,61 +624,205 @@ def write_results_html(
             + td(html.escape(run.conclusion))
             + td("yes" if key not in failed_runs else "no")
             + td("yes" if finding else "no")
-            + td(html.escape(finding.severity if finding else ""))
+            + td(sev_cell)
             + "</tr>"
         )
-    html_parts.append("    </tbody>")
-    html_parts.append("  </table>")
+    P.append("    </tbody>")
+    P.append("  </table></div>")
 
-    html_parts.append("  <h2>Flagged Items</h2>")
+    # Flagged
+    P.append("  <h2>Flagged Items</h2>")
     if flagged:
-        html_parts.append("  <ul>")
+        P.append('  <ul class="flagged-list">')
         for item in flagged:
-            html_parts.append(
+            run_h = f'<a href="{html.escape(run_url(item.repository, item.run_id))}">{item.run_id}</a>'
+            P.append(
                 "    <li>"
-                f"{html.escape(item.severity)} {html.escape(item.repository)} run {item.run_id} "
-                f"({html.escape(item.usage_type)}) {html.escape(item.log_path)}"
-                "</li>"
+                + _severity_badge(item.severity) + " "
+                + f'<span class="fl-repo">{html.escape(item.repository)}</span> '
+                + f'run {run_h} '
+                + f'<span class="fl-meta">({html.escape(item.usage_type)}) {html.escape(item.log_path)}</span>'
+                + "</li>"
             )
-        html_parts.append("  </ul>")
+        P.append("  </ul>")
     else:
-        html_parts.append("  <p>None</p>")
+        P.append("  <p style='color:var(--ok);font-weight:600'>No flagged items.</p>")
 
-    html_parts.append("  <h2>Collection Failures</h2>")
+    # Collection failures
+    P.append("  <h2>Collection Failures</h2>")
     if failed:
-        html_parts.append("  <ul>")
+        P.append('  <div class="tbl-wrap"><table>')
+        P.append("    <thead><tr><th>Repository</th><th>Run ID</th><th>Error</th></tr></thead>")
+        P.append("    <tbody>")
         for item in failed:
-            html_parts.append(
-                f"    <li>{html.escape(item['repo'])} run {html.escape(item['run_id'])}: {html.escape(item['error'])}</li>"
+            P.append(
+                "      <tr>"
+                + td(html.escape(item["repo"]))
+                + td(html.escape(item["run_id"]))
+                + td(html.escape(item["error"]))
+                + "</tr>"
             )
-        html_parts.append("  </ul>")
+        P.append("    </tbody>")
+        P.append("  </table></div>")
     else:
-        html_parts.append("  <p>None</p>")
+        P.append("  <p style='color:var(--ok);font-weight:600'>No collection failures.</p>")
 
-    html_parts.append("  <script>")
-    html_parts.append("    function sortFindingsBy(columnIndex, asc) {")
-    html_parts.append("      const table = document.getElementById('findings-table');")
-    html_parts.append("      if (!table) return;")
-    html_parts.append("      const body = table.tBodies[0];")
-    html_parts.append("      if (!body) return;")
-    html_parts.append("      const rows = Array.from(body.rows);")
-    html_parts.append("      rows.sort((a, b) => {")
-    html_parts.append("        const aCell = a.cells[columnIndex];")
-    html_parts.append("        const bCell = b.cells[columnIndex];")
-    html_parts.append("        const aValue = (aCell && aCell.dataset && aCell.dataset.sortValue ? aCell.dataset.sortValue : (aCell ? aCell.textContent : '')).trim();")
-    html_parts.append("        const bValue = (bCell && bCell.dataset && bCell.dataset.sortValue ? bCell.dataset.sortValue : (bCell ? bCell.textContent : '')).trim();")
-    html_parts.append("        if (aValue === bValue) return 0;")
-    html_parts.append("        return asc ? aValue.localeCompare(bValue) : bValue.localeCompare(aValue);")
-    html_parts.append("      });")
-    html_parts.append("      for (const row of rows) body.appendChild(row);")
-    html_parts.append("    }")
-    html_parts.append("  </script>")
+    # JS sort
+    P.append("  <script>")
+    P.append("""    function sortFindingsBy(col, asc) {
+      const tbl = document.getElementById('findings-table');
+      if (!tbl) return;
+      const body = tbl.tBodies[0];
+      const rows = Array.from(body.rows);
+      rows.sort((a, b) => {
+        const av = (a.cells[col]?.dataset?.sortValue ?? a.cells[col]?.textContent ?? '').trim();
+        const bv = (b.cells[col]?.dataset?.sortValue ?? b.cells[col]?.textContent ?? '').trim();
+        return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+      });
+      rows.forEach(r => body.appendChild(r));
+    }""")
+    P.append("  </script>")
 
-    html_parts.append("</body>")
-    html_parts.append("</html>")
+    P.append('  <footer class="site-footer">')
+    P.append('    by: <a href="https://github.com/ebvjrwork">ebvjrwork</a> with help of Claude Opus 4.6')
+    P.append('  </footer>')
+    P.append("  </div>")  # .page
+    P.append("</body>")
+    P.append("</html>")
 
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(html_parts))
+        f.write("\n".join(P))
+
+
+def write_log_html(log_path: str, finding: Finding, out_path: str) -> None:
+    """Generate an annotated HTML view of a single log file with evidence lines highlighted in red."""
+    in_window = finding_exposure_match(finding)
+    window_name = run_in_any_exposure_window(finding.run_time_utc)
+    versions = [v.strip() for v in (finding.version or "").split(",") if v.strip()]
+    ioc_tokens: List[str] = []
+    for tok in (finding.ioc_match or "").split(","):
+        tok = tok.strip()
+        if ":" in tok:
+            val = tok.split(":", 1)[-1].strip()
+            if val and len(val) > 8:
+                ioc_tokens.append(val.lower())
+
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            log_lines = f.readlines()
+    except OSError:
+        return
+
+    def _is_evidence(line: str) -> bool:
+        lc = line.lower()
+        if "trivy" in lc:
+            return True
+        for v in versions:
+            if v.lower() in lc:
+                return True
+        for ioc in ioc_tokens:
+            if ioc in lc:
+                return True
+        return False
+
+    line_parts: List[str] = []
+    for idx, raw_line in enumerate(log_lines):
+        stripped = raw_line.strip()
+        section_m = _LOG_SECTION_HEADER_RE.match(stripped)
+        if section_m:
+            title = html.escape(section_m.group(1))
+            line_parts.append(
+                f'<div class="log-section" id="sec-{idx}">'
+                f'<span class="ln">{idx + 1:6d}</span> '
+                f'<span class="section-title">═══ {title} ═══</span></div>'
+            )
+            continue
+        ev = _is_evidence(raw_line)
+        row_cls = ' class="ev-line"' if ev else ""
+        highlighted = _highlight_log_line_html(raw_line, versions)
+        line_parts.append(f'<div{row_cls}><span class="ln">{idx + 1:6d}</span> {highlighted}</div>')
+
+    banner_html = ""
+    if in_window and window_name:
+        s, e = EXPOSURE_WINDOWS[window_name]
+        banner_html = (
+            f'<div class="window-banner">'
+            f'&#9888; RUN TIME <strong>{html.escape(finding.run_time_utc)}</strong> falls in the '
+            f'<strong>{html.escape(window_name)}</strong> exposure window '
+            f'({s.strftime("%Y-%m-%dT%H:%MZ")} &ndash; {e.strftime("%Y-%m-%dT%H:%MZ")}). '
+            f'This run may have been affected by the Trivy supply chain compromise.'
+            f'</div>'
+        )
+
+    run_time_html = (
+        f'<span style="color:#c00;font-weight:bold">{html.escape(finding.run_time_utc)}</span>'
+        if in_window else html.escape(finding.run_time_utc)
+    )
+
+    page = "\n".join([
+        "<!doctype html>",
+        '<html lang="en">',
+        "<head>",
+        '  <meta charset="utf-8">',
+        '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"  <title>Log: {html.escape(os.path.basename(log_path))} &mdash; {html.escape(finding.repository)}</title>",
+        "  <style>",
+        "    * { box-sizing: border-box; margin: 0; padding: 0; }",
+        "    body { font-family: Arial, sans-serif; font-size: 13px; color: #111; }",
+        "    .page-header { background: #f5f5f5; border-bottom: 2px solid #ddd; padding: 14px 20px; }",
+        "    .page-header h1 { font-size: 15px; margin: 0 0 10px 0; word-break: break-all; color: #333; }",
+        "    .meta-table { border-collapse: collapse; font-size: 12px; }",
+        "    .meta-table td { padding: 2px 12px 2px 0; vertical-align: top; }",
+        "    .meta-table td:first-child { font-weight: bold; white-space: nowrap; width: 130px; }",
+        "    .window-banner { background: #b00; color: #fff; padding: 10px 20px; font-size: 13px; font-weight: bold; }",
+        "    .evidence-note { background: #fff8e1; border: 1px solid #ffe082; padding: 6px 14px; margin: 8px 20px; font-size: 12px; }",
+        "    .log-body { padding: 4px 0; overflow-x: auto; }",
+        "    .log-body div { font-family: 'Courier New', monospace; font-size: 11.5px; white-space: pre; line-height: 1.55; padding: 0 6px; }",
+        "    .ev-line { background: #fff0f0 !important; border-left: 4px solid #c00; }",
+        "    .log-section { background: #eef2ff; border-left: 4px solid #66c; padding: 2px 8px; }",
+        "    .section-title { color: #338; font-weight: bold; }",
+        "    .ln { color: #bbb; display: inline-block; min-width: 52px; text-align: right; padding-right: 14px; user-select: none; }",
+        "    .hl-trivy { background: #ffe0e0; color: #900; font-weight: bold; }",
+        "    .hl-version { background: #ffd0d0; color: #800; font-weight: bold; }",
+        "    .hl-action { background: #ffe8b0; color: #740; font-weight: bold; }",
+        "    .dt-red { color: #c00; font-weight: bold; }",
+        "    a { color: #0066cc; }",
+        "  </style>",
+        "</head>",
+        "<body>",
+        "  <div class=\"page-header\">",
+        f'    <h1>Log: {html.escape(log_path)}</h1>',
+        '    <table class="meta-table">',
+        f'      <tr><td>Repository</td><td><a href="{html.escape(repo_url(finding.repository))}">{html.escape(finding.repository)}</a></td></tr>',
+        f'      <tr><td>Run ID</td><td><a href="{html.escape(run_url(finding.repository, finding.run_id))}">{finding.run_id}</a></td></tr>',
+        f"      <tr><td>Run Time (UTC)</td><td>{run_time_html}</td></tr>",
+        f"      <tr><td>Workflow</td><td>{html.escape(finding.workflow)}</td></tr>",
+        f"      <tr><td>Severity</td><td><strong>{html.escape(finding.severity)}</strong> &mdash; {html.escape(finding.severity_trigger)}</td></tr>",
+        f"      <tr><td>Usage Type</td><td>{html.escape(finding.usage_type)}</td></tr>",
+        f"      <tr><td>Trivy Details</td><td>{format_trivy_details_html(finding)}</td></tr>",
+        (f"      <tr><td>IOC Match</td><td>{html.escape(finding.ioc_match)}</td></tr>" if finding.ioc_match else ""),
+        "    </table>",
+        "  </div>",
+        f"  {banner_html}",
+        "  <div class=\"evidence-note\">",
+        "    Lines highlighted in "
+        "<span style='background:#fff0f0;border-left:3px solid #c00;padding:1px 6px;font-family:monospace'>red</span>"
+        " contain Trivy references or version evidence. &nbsp;"
+        "<span class='hl-trivy' style='padding:1px 4px;font-family:monospace'>trivy</span> keyword, "
+        "<span class='hl-version' style='padding:1px 4px;font-family:monospace'>version</span> numbers, and "
+        "<span class='hl-action' style='padding:1px 4px;font-family:monospace'>action refs</span> are highlighted inline.",
+        "  </div>",
+        '  <div class="log-body">',
+        "".join(line_parts),
+        "  </div>",
+        "</body>",
+        "</html>",
+    ])
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fout:
+        fout.write(page)
 
 
 def write_flags_file(flags_path: str, findings: List[Finding]) -> None:

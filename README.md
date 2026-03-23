@@ -2,9 +2,19 @@
 
 `trivyincident` is a GitHub Actions incident-hunting scanner focused on known Trivy supply-chain compromise indicators during the March 19, 2026 incident.
 
-Reference discussion: https://github.com/aquasecurity/trivy/discussions/10425
+## References
 
-It scans workflow run logs across an organization (or scans already-downloaded logs), detects suspicious Trivy usage patterns, correlates findings against IOC databases, and generates investigation-friendly reports in Markdown and HTML.
+- https://github.com/aquasecurity/trivy/discussions/10425
+- https://socket.dev/supply-chain-attacks/trivy-github-actions-compromise
+- https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack
+
+## Exposure windows
+
+| Component | Affected versions | NOT affected | Exposure window (UTC) | Duration |
+| --- | --- | --- | --- | --- |
+| **trivy** | v0.69.4 (latest tag also pointed to v0.69.4). GHCR, ECR Public, Docker Hub, deb, rpm, get.trivy.dev. | 1) v0.69.3 or earlier 2) Container images referenced by digest | 2026-03-19 18:22 – ~21:42 | ~3 hours |
+| **trivy-action** | 1) All tags prior to 0.35.0 2) Explicitly requesting `version: latest` (not the default) during the trivy exposure window | 1) @0.35.0 2) SHA-pinned references since 2025-04-09 | 2026-03-19 ~17:43 – 2026-03-20 ~05:40 | ~12 hours |
+| **setup-trivy** | All releases | SHA-pinned references | 2026-03-19 ~17:43 – ~21:44 | ~4 hours |
 
 ## What it does
 
@@ -20,19 +30,10 @@ It scans workflow run logs across an organization (or scans already-downloaded l
   - Malicious binary SHA256 digests
   - Suspicious network indicators
 - Assigns severity and trigger rationale per finding.
-- Produces:
-  - `results.md` (detailed markdown report)
-  - `results.html` (interactive report with sort controls)
-  - `logs/flags.txt` (high-priority flat list)
-
-## Why this is useful
-
-- Designed for rapid triage during a supply-chain incident window.
-- Separates IOC data from code, so updates are easy and low-risk.
-- Preserves evidence snippets in output to speed human investigation.
-- Supports two workflows:
-  - **Live collection mode**: query GitHub and pull logs now.
-  - **Offline/local mode**: re-scan existing logs without API listing.
+- Produces all output in the `results/` directory:
+  - `results/results.html` — interactive HTML report with sort controls, exposure window highlighting, and severity badges
+  - `results/logs/` — per-finding annotated log HTML files with evidence highlighted (when `--generate-log-html` is used)
+  - `logs/flags.txt` — high-priority flat list for rapid escalation
 
 ## Limitations
 
@@ -48,7 +49,7 @@ It scans workflow run logs across an organization (or scans already-downloaded l
   - `github_ops.py` – GitHub CLI/API operations.
   - `indicators.py` – IOC DB loading.
   - `log_parser.py` – extraction, matching, severity logic.
-  - `reporting.py` – markdown/html/flags report generation.
+  - `reporting.py` – HTML report and flags generation.
   - `models.py` – dataclasses and severity ranking.
 - `db/` – IOC databases.
 - `tests/` – unit tests for parser and indicators.
@@ -76,7 +77,8 @@ Format: one IOC per line (comments with `#` allowed).
 python3 trivyincident.py \
   --org your-org \
   --start 2026-03-19T00:00:00Z \
-  --end   2026-03-21T20:00:00Z
+  --end   2026-03-21T20:00:00Z \
+  --generate-log-html
 ```
 
 ### 2) Local log re-scan (skip GitHub listing)
@@ -86,17 +88,22 @@ python3 trivyincident.py \
   --org your-org \
   --start 2026-03-19T00:00:00Z \
   --end   2026-03-21T20:00:00Z \
-  --skip-run-listing
+  --skip-run-listing \
+  --generate-log-html
 ```
 
 ### 3) Optional arguments
 
-- `--logs-root logs` – log storage directory
-- `--report results.md` – markdown output file
-- `--html-report results.html` – html output file
-- `--db-root db` – IOC database root
-- `--include-archived` – include archived repos
-- `--max-repos N` – limit repository scan count
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--logs-root` | `logs` | Log storage directory |
+| `--results-dir` | `results` | Output directory for HTML report and log HTMLs |
+| `--db-root` | `db` | IOC database root |
+| `--generate-log-html` | off | Generate per-finding annotated HTML log files |
+| `--log-html-root` | `<results-dir>/logs/` | Custom output directory for log HTMLs |
+| `--include-archived` | off | Include archived repos |
+| `--max-repos N` | 0 (all) | Limit repository scan count |
+| `--skip-run-listing` | off | Scan existing local logs, skip GitHub API |
 
 ## How findings are determined
 
@@ -113,49 +120,32 @@ Severity logic:
 - **HIGH**: suspicious non-IOC risk pattern (for example `apt-0.69.4` or risky action ref)
 - **MEDIUM**: baseline Trivy activity without IOC/high-risk trigger
 
-## Report outputs explained
+## Report output
 
-## `results.md`
+### `results/results.html`
 
-Main investigation report with sections:
+Interactive HTML report with sections:
 
-1. **Summary block**
-   - Organization, time window, scan totals.
-2. **Daily Summary**
-   - Findings/day with type and severity counts.
-3. **Findings table**
-   - One row per detected run with evidence and rationale.
-4. **All Scanned Runs**
-   - Coverage view (which runs were scanned and whether Trivy was found).
-5. **Flagged Items**
-   - Quick list of CRITICAL/HIGH entries.
+1. **Info block** — Organization, run start/end (UTC).
+2. **Summary cards** — Repos, runs, findings, CRITICAL, HIGH, logs new/reused, failures.
+3. **Exposure Windows** — Reference table of affected components, versions, and time windows.
+4. **Daily Summary** — Findings per day with GitHub Actions, APT, container, and severity counts.
+5. **Findings table** — One row per detected run with evidence, severity badges, and sort controls (`▲`/`▼`).
+6. **All Scanned Runs** — Coverage view showing which runs were scanned and whether Trivy was found.
+7. **Flagged Items** — Quick list of CRITICAL/HIGH entries.
+8. **Collection Failures** — Any log download errors.
 
-### Key Findings columns
+Row highlighting:
+- **Red row**: run time falls in a Trivy supply-chain exposure window (Trivy detected).
+- **Amber row** (All Scanned Runs only): run time in exposure window, no Trivy detected.
 
-- **Date (UTC)**: date portion for grouping/sorting.
-- **Repository / Run**: direct links to repo and workflow run.
-- **Run Time (UTC)**: normalized timestamp used in timeline analysis.
-- **Workflow**: workflow/job name extracted from run metadata/logs.
-- **Usage Type**: `action`, `apt`, `binary-download`, `container`, or `unknown`.
-- **Trivy Details (Version + SHA)**:
-  - action refs + resolved commit SHAs when available,
-  - version hints from log evidence.
-- **IOC Match**: matched IOC tokens (`workflow-sha:*`, `binary-sha256:*`, `network:*`).
-- **Severity / Severity Trigger**:
-  - severity grade and exact reason string (for analyst traceability).
-- **Evidence Snippet**: normalized line snippets from logs used to support detection.
+### `results/logs/*.html`
 
-## `results.html`
+Per-finding annotated log views with:
+- Evidence lines highlighted in red
+- `trivy` keyword, version numbers, and action refs highlighted inline
 
-Human-friendly interactive version of the report.
-
-Notable capabilities:
-- Includes all report sections from markdown output.
-- Findings table supports in-header up/down sort controls (`▲`/`▼`) for:
-  - `Date (UTC)`
-  - `Run Time (UTC)`
-
-## `logs/flags.txt`
+### `logs/flags.txt`
 
 Plain-text shortlist for rapid escalation workflows.
 Each line includes severity, repository, run id, apt marker, and log path.
@@ -178,7 +168,7 @@ python3 -m unittest discover -s tests -v
 
 1. Update IOC DB files in `db/`.
 2. Run live scan over incident window.
-3. Review `results.html` sorted by run time/date.
+3. Review `results/results.html` sorted by run time.
 4. Triage `CRITICAL` and `HIGH` first.
 5. Use run links and evidence snippets to confirm context in GitHub.
 6. Re-run in `--skip-run-listing` mode for fast iterative analysis.

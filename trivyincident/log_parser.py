@@ -293,7 +293,7 @@ def parse_log_for_finding(run: RunInfo, log_path: str) -> Optional[Finding]:
         collect_indices(lambda line: CONTAINER_RE.search(line) is not None)
 
     if versions:
-        collect_indices(lambda line: any(v in line for v in versions))
+        collect_indices(lambda line: any(v in line for v in versions) and TRIVY_WORD_RE.search(line) is not None)
 
     if not evidence_indices:
         evidence_indices.add(trivy_lines_idx[0])
