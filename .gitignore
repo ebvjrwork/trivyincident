@@ -14,8 +14,8 @@ env/
 
 # Local outputs
 logs/
-results.md
-results.html
+results/
+results-logs/
 
 # OS/Editor
 .DS_Store
