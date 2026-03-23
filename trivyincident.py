@@ -2,12 +2,16 @@
 import argparse
 import os
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Dict, List, Set, Tuple
 
 from trivyincident.github_ops import (
     download_run_log,
     ensure_prereqs,
+    get_rate_limit,
     list_repos,
     list_runs_in_window,
 )
@@ -125,20 +129,89 @@ def main() -> int:
     downloaded = 0
     skipped_existing = 0
 
-    for idx, run in enumerate(all_runs, start=1):
+    # ── Phase 1: separate runs that need downloading from those already cached ──
+    to_download: List[Tuple[RunInfo, str]] = []
+    already_cached: List[Tuple[RunInfo, str]] = []
+
+    for run in all_runs:
         repo_name = run.repo.split("/", 1)[1]
         out_path = os.path.join(args.logs_root, repo_name, f"{run.run_id}.log")
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            skipped_existing += 1
-            print(f"[{idx}/{len(all_runs)}] skipping existing log {out_path}", flush=True)
+            already_cached.append((run, out_path))
         else:
-            print(f"[{idx}/{len(all_runs)}] downloading {run.repo} run {run.run_id}", flush=True)
-            ok, err, _ = download_run_log(run.repo, run.run_id, out_path)
-            if not ok:
-                failures.append({"repo": run.repo, "run_id": str(run.run_id), "error": err})
-                continue
-            downloaded += 1
+            to_download.append((run, out_path))
 
+    skipped_existing = len(already_cached)
+    print(
+        f"logs: {skipped_existing} cached, {len(to_download)} to download",
+        flush=True,
+    )
+
+    # ── Phase 2: download logs in parallel with rate-limit awareness ───────────
+    if to_download:
+        _lock = threading.Lock()
+        _call_count = 0
+        _RATE_CHECK_INTERVAL = 20
+        _MIN_REMAINING = 100
+
+        def _ensure_rate_limit() -> None:
+            remaining, reset_ts = get_rate_limit()
+            if remaining == -1:
+                return  # couldn't check – proceed optimistically
+            if remaining < _MIN_REMAINING:
+                wait = max(reset_ts - time.time(), 0) + 1
+                print(
+                    f"  rate-limit low ({remaining} remaining), pausing {wait:.0f}s until reset",
+                    flush=True,
+                )
+                time.sleep(wait)
+
+        def _download_one(
+            run: RunInfo, out_path: str, idx: int, total: int
+        ) -> Tuple[RunInfo, str, bool, str]:
+            nonlocal _call_count
+            with _lock:
+                _call_count += 1
+                if _call_count % _RATE_CHECK_INTERVAL == 0:
+                    _ensure_rate_limit()
+            print(
+                f"  [{idx}/{total}] downloading {run.repo} run {run.run_id}",
+                flush=True,
+            )
+            ok, err, _ = download_run_log(run.repo, run.run_id, out_path)
+            return run, out_path, ok, err
+
+        # initial rate-limit check before starting
+        _ensure_rate_limit()
+
+        max_workers = min(5, len(to_download))
+        total_dl = len(to_download)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_download_one, run, path, idx, total_dl): (run, path)
+                for idx, (run, path) in enumerate(to_download, 1)
+            }
+            for future in as_completed(futures):
+                run, out_path, ok, err = future.result()
+                if ok:
+                    downloaded += 1
+                else:
+                    failures.append(
+                        {"repo": run.repo, "run_id": str(run.run_id), "error": err}
+                    )
+
+        print(
+            f"  download phase done: {downloaded} succeeded, {len(failures)} failed",
+            flush=True,
+        )
+
+    # ── Phase 3: parse all available logs ──────────────────────────────────────
+    all_with_paths = already_cached + [
+        (run, path) for run, path in to_download
+        if os.path.exists(path) and os.path.getsize(path) > 0
+    ]
+
+    for run, out_path in all_with_paths:
         if not run.created_at:
             run.created_at = extract_first_log_timestamp_from_file(out_path)
         if not run.workflow_name:

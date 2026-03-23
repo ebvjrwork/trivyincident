@@ -10,6 +10,25 @@ from typing import List, Optional, Tuple
 from .models import RepoInfo, RunInfo
 
 
+def get_rate_limit() -> Tuple[int, float]:
+    """Return (remaining_requests, reset_unix_timestamp) for the core GitHub API.
+
+    Returns (-1, 0.0) if the rate limit could not be fetched.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "api", "rate_limit"],
+            text=True, capture_output=True, check=False,
+        )
+        if result.returncode != 0:
+            return -1, 0.0
+        data = json.loads(result.stdout)
+        core = data.get("resources", {}).get("core", {})
+        return core.get("remaining", 0), float(core.get("reset", 0))
+    except Exception:
+        return -1, 0.0
+
+
 def run_cmd(cmd: List[str], capture: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, text=True, capture_output=capture, check=False)
 
