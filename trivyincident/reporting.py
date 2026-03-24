@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Tuple
 
-from .models import Finding, RunInfo, SEVERITY_RANK
+from .models import Finding, RunInfo, SEVERITY_RANK, EXPOSURE_WINDOWS
 
 
 def escape_md(value: str) -> str:
@@ -40,20 +40,7 @@ def _parse_utc_iso(value: str) -> datetime | None:
         return None
 
 
-EXPOSURE_WINDOWS: Dict[str, Tuple[datetime, datetime]] = {
-    "trivy": (
-        datetime(2026, 3, 19, 18, 22, tzinfo=timezone.utc),
-        datetime(2026, 3, 19, 21, 42, tzinfo=timezone.utc),
-    ),
-    "trivy-action": (
-        datetime(2026, 3, 19, 17, 43, tzinfo=timezone.utc),
-        datetime(2026, 3, 20, 5, 40, tzinfo=timezone.utc),
-    ),
-    "setup-trivy": (
-        datetime(2026, 3, 19, 17, 43, tzinfo=timezone.utc),
-        datetime(2026, 3, 19, 21, 44, tzinfo=timezone.utc),
-    ),
-}
+# EXPOSURE_WINDOWS imported from models.py
 
 
 def _is_sha_ref(ref_value: str) -> bool:
@@ -514,6 +501,188 @@ def write_results_html(
     P.append('    </tbody>')
     P.append('  </table></div>')
 
+    # ── Exposure Window vs Pipeline Runs Timeline Chart ──
+    import json as _json
+    _chart_findings = []
+    for f in findings_sorted:
+        if f.run_time_utc:
+            _chart_findings.append({
+                "ts": f.run_time_utc,
+                "repo": f.repository.split("/", 1)[-1] if "/" in f.repository else f.repository,
+                "run_id": f.run_id,
+                "severity": f.severity,
+                "usage": f.usage_type,
+                "workflow": f.workflow or "",
+                "in_window": finding_exposure_match(f),
+            })
+    _ew_data = {}
+    for name, (ws, we) in EXPOSURE_WINDOWS.items():
+        _ew_data[name] = {"start": ws.isoformat(), "end": we.isoformat()}
+    P.append('  <h2>Exposure Window vs Pipeline Runs</h2>')
+    P.append('  <div id="timeline-chart" style="width:100%;overflow-x:auto;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 12px;margin-bottom:20px"></div>')
+    P.append(f'  <script>window.__FINDINGS_TS={_json.dumps(_chart_findings)};window.__EW={_json.dumps(_ew_data)}</script>')
+    P.append("""  <script>
+(function() {
+  const findings = window.__FINDINGS_TS;
+  const ew = window.__EW;
+  if (!findings.length) return;
+
+  // Parse all timestamps, find range
+  const parseT = s => new Date(s.replace('Z','+00:00'));
+  const allTs = findings.map(f => parseT(f.ts).getTime());
+  Object.values(ew).forEach(w => { allTs.push(parseT(w.start).getTime(), parseT(w.end).getTime()); });
+  let tMin = Math.min(...allTs), tMax = Math.max(...allTs);
+  // Add 2% padding
+  const pad = Math.max((tMax - tMin) * 0.02, 3600000);
+  tMin -= pad; tMax += pad;
+  const tRange = tMax - tMin;
+
+  const W = Math.max(900, findings.length * 14 + 200);
+  const H = 260;
+  const ml = 110, mr = 20, mt = 30, mb = 60;
+  const chartW = W - ml - mr, chartH = H - mt - mb;
+
+  const sevColor = {CRITICAL:'#d32f2f', HIGH:'#f57c00', MEDIUM:'#fbc02d'};
+  const ewColors = {'trivy':'rgba(211,47,47,0.15)', 'trivy-action':'rgba(245,124,0,0.15)', 'setup-trivy':'rgba(251,192,45,0.15)'};
+  const ewBorder = {'trivy':'#d32f2f', 'trivy-action':'#f57c00', 'setup-trivy':'#fbc02d'};
+  const x = ts => ml + ((ts - tMin) / tRange) * chartW;
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', H);
+  svg.style.display = 'block';
+  svg.style.margin = '0 auto';
+
+  // Exposure window bands
+  const ewNames = Object.keys(ew);
+  const bandH = chartH / Math.max(ewNames.length, 1);
+  ewNames.forEach((name, i) => {
+    const ws = parseT(ew[name].start).getTime(), we = parseT(ew[name].end).getTime();
+    const rx = x(ws), rw = x(we) - rx, ry = mt + i * bandH;
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', rx); rect.setAttribute('y', ry);
+    rect.setAttribute('width', Math.max(rw, 2)); rect.setAttribute('height', bandH);
+    rect.setAttribute('fill', ewColors[name] || 'rgba(0,0,0,0.05)');
+    rect.setAttribute('stroke', ewBorder[name] || '#999');
+    rect.setAttribute('stroke-width', '1');
+    rect.setAttribute('stroke-dasharray', '4,2');
+    svg.appendChild(rect);
+    // Label
+    const lbl = document.createElementNS(ns, 'text');
+    lbl.setAttribute('x', ml - 6); lbl.setAttribute('y', ry + bandH/2 + 4);
+    lbl.setAttribute('text-anchor', 'end');
+    lbl.setAttribute('font-size', '11'); lbl.setAttribute('fill', '#374151');
+    lbl.setAttribute('font-family', 'system-ui, sans-serif');
+    lbl.textContent = name;
+    svg.appendChild(lbl);
+  });
+
+  // Time axis
+  const axisY = H - mb + 10;
+  const axLine = document.createElementNS(ns, 'line');
+  axLine.setAttribute('x1', ml); axLine.setAttribute('y1', axisY);
+  axLine.setAttribute('x2', W - mr); axLine.setAttribute('y2', axisY);
+  axLine.setAttribute('stroke', '#9ca3af'); axLine.setAttribute('stroke-width', '1');
+  svg.appendChild(axLine);
+
+  // Tick marks (every 3 hours or auto)
+  const tickInterval = tRange > 86400000*2 ? 86400000 : tRange > 86400000 ? 21600000 : tRange > 43200000 ? 10800000 : 3600000;
+  const firstTick = Math.ceil(tMin / tickInterval) * tickInterval;
+  for (let t = firstTick; t <= tMax; t += tickInterval) {
+    const tx = x(t);
+    const tick = document.createElementNS(ns, 'line');
+    tick.setAttribute('x1', tx); tick.setAttribute('y1', axisY - 4);
+    tick.setAttribute('x2', tx); tick.setAttribute('y2', axisY + 4);
+    tick.setAttribute('stroke', '#9ca3af'); tick.setAttribute('stroke-width', '1');
+    svg.appendChild(tick);
+    const d = new Date(t);
+    const label = document.createElementNS(ns, 'text');
+    label.setAttribute('x', tx); label.setAttribute('y', axisY + 18);
+    label.setAttribute('text-anchor', 'middle');
+    label.setAttribute('font-size', '10'); label.setAttribute('fill', '#6b7280');
+    label.setAttribute('font-family', 'system-ui, sans-serif');
+    const mo = d.getUTCMonth() + 1, da = d.getUTCDate();
+    const hh = String(d.getUTCHours()).padStart(2,'0'), mm = String(d.getUTCMinutes()).padStart(2,'0');
+    label.textContent = `${mo}/${da} ${hh}:${mm}`;
+    svg.appendChild(label);
+  }
+
+  // Tooltip element
+  const tooltip = document.createElement('div');
+  tooltip.style.cssText = 'position:fixed;background:#1f2937;color:#fff;padding:6px 10px;border-radius:6px;font-size:12px;pointer-events:none;display:none;z-index:999;max-width:320px;line-height:1.4;font-family:system-ui,sans-serif';
+  document.body.appendChild(tooltip);
+
+  // Finding dots — spread vertically to avoid overlap
+  const sorted = findings.slice().sort((a,b) => parseT(a.ts).getTime() - parseT(b.ts).getTime());
+  sorted.forEach((f, idx) => {
+    const ft = parseT(f.ts).getTime();
+    const cx = x(ft);
+    const cy = mt + (idx / Math.max(sorted.length - 1, 1)) * chartH;
+    const r = 6;
+    const a = document.createElementNS(ns, 'a');
+    a.setAttribute('href', '#finding-' + f.run_id);
+    const circle = document.createElementNS(ns, 'circle');
+    circle.setAttribute('cx', cx); circle.setAttribute('cy', cy);
+    circle.setAttribute('r', r);
+    circle.setAttribute('fill', sevColor[f.severity] || '#6b7280');
+    circle.setAttribute('stroke', '#fff'); circle.setAttribute('stroke-width', '1.5');
+    circle.style.cursor = 'pointer';
+    circle.style.transition = 'r 0.15s';
+    circle.addEventListener('mouseenter', function(e) {
+      this.setAttribute('r', r * 1.6);
+      const inW = f.in_window ? '<b style="color:#fca5a5">IN WINDOW</b>' : 'outside window';
+      tooltip.innerHTML = '<b>' + f.repo + '</b><br>Run ' + f.run_id + '<br>' + f.ts.replace('T',' ').replace('Z','') + ' UTC<br>' + f.severity + ' &bull; ' + f.usage + '<br>' + inW;
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 12) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+    });
+    circle.addEventListener('mousemove', e => {
+      tooltip.style.left = (e.clientX + 12) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+    });
+    circle.addEventListener('mouseleave', function() {
+      this.setAttribute('r', r);
+      tooltip.style.display = 'none';
+    });
+    a.appendChild(circle);
+    svg.appendChild(a);
+  });
+
+  // Legend
+  const legX = ml, legY = 6;
+  [{s:'CRITICAL',c:'#d32f2f'},{s:'HIGH',c:'#f57c00'},{s:'MEDIUM',c:'#fbc02d'}].forEach((item, i) => {
+    const cx = legX + i * 90, cy = legY + 6;
+    const dot = document.createElementNS(ns, 'circle');
+    dot.setAttribute('cx', cx); dot.setAttribute('cy', cy); dot.setAttribute('r', 5);
+    dot.setAttribute('fill', item.c);
+    svg.appendChild(dot);
+    const t = document.createElementNS(ns, 'text');
+    t.setAttribute('x', cx + 8); t.setAttribute('y', cy + 4);
+    t.setAttribute('font-size', '11'); t.setAttribute('fill', '#374151');
+    t.setAttribute('font-family', 'system-ui, sans-serif');
+    t.textContent = item.s;
+    svg.appendChild(t);
+  });
+  // Dashed box = exposure window
+  const elx = legX + 280;
+  const elr = document.createElementNS(ns, 'rect');
+  elr.setAttribute('x', elx); elr.setAttribute('y', legY);
+  elr.setAttribute('width', 14); elr.setAttribute('height', 12);
+  elr.setAttribute('fill', 'rgba(245,124,0,0.15)');
+  elr.setAttribute('stroke', '#f57c00'); elr.setAttribute('stroke-dasharray', '3,2');
+  svg.appendChild(elr);
+  const elt = document.createElementNS(ns, 'text');
+  elt.setAttribute('x', elx + 18); elt.setAttribute('y', legY + 10);
+  elt.setAttribute('font-size', '11'); elt.setAttribute('fill', '#374151');
+  elt.setAttribute('font-family', 'system-ui, sans-serif');
+  elt.textContent = 'Exposure window';
+  svg.appendChild(elt);
+
+  document.getElementById('timeline-chart').appendChild(svg);
+})();
+</script>""")
+
     # Daily summary
     P.append("  <h2>Daily Summary</h2>")
     P.append('  <div class="tbl-wrap"><table>')
@@ -580,7 +749,7 @@ def write_results_html(
             rel = os.path.relpath(log_html_path, os.path.dirname(os.path.abspath(output_path)))
             log_view_td = f'<td><a class="log-view" href="{html.escape(rel)}">view log ↗</a></td>'
         P.append(
-            f"      <tr{row_class}>"
+            f"      <tr id=\"finding-{finding.run_id}\"{row_class}>"
             + f'<td data-sort-value="{html.escape(run_time_value)}">{maybe_red_html(run_time_value, matched_window)}</td>'
             + td(repo_link)
             + td(run_link)
@@ -698,6 +867,31 @@ def write_results_html(
         f.write("\n".join(P))
 
 
+def _build_evidence_summary_html(evidence_lines: List[Tuple[int, str]]) -> str:
+    """Build a collapsible summary of detected evidence lines with jump links."""
+    if not evidence_lines:
+        return ""
+    parts = [
+        '  <details class="ev-summary" open>',
+        f'    <summary style="cursor:pointer;font-weight:600;font-size:13px;padding:8px 14px;'
+        f'background:#fff8e1;border:1px solid #ffe082;margin:8px 20px;border-radius:4px">'
+        f'Detected Lines ({len(evidence_lines)})</summary>',
+        '    <ol style="margin:4px 20px 12px 20px;padding:0 0 0 20px;font-size:12px;'
+        'font-family:\'Courier New\',monospace;line-height:1.7;list-style:none;'
+        'max-height:300px;overflow-y:auto;background:#fafafa;border:1px solid #e5e7eb;border-radius:4px;padding:8px 12px">',
+    ]
+    for lineno, text in evidence_lines:
+        escaped = html.escape(text)
+        parts.append(
+            f'      <li><a href="#L{lineno}" style="color:#0066cc;text-decoration:none">'
+            f'<span style="color:#999;min-width:50px;display:inline-block;text-align:right;margin-right:10px">L{lineno}</span>'
+            f'</a><span style="color:#333">{escaped}</span></li>'
+        )
+    parts.append("    </ol>")
+    parts.append("  </details>")
+    return "\n".join(parts)
+
+
 def write_log_html(log_path: str, finding: Finding, out_path: str) -> None:
     """Generate an annotated HTML view of a single log file with evidence lines highlighted in red."""
     in_window = finding_exposure_match(finding)
@@ -730,13 +924,14 @@ def write_log_html(log_path: str, finding: Finding, out_path: str) -> None:
         return False
 
     line_parts: List[str] = []
+    evidence_lines: List[Tuple[int, str]] = []
     for idx, raw_line in enumerate(log_lines):
         stripped = raw_line.strip()
         section_m = _LOG_SECTION_HEADER_RE.match(stripped)
         if section_m:
             title = html.escape(section_m.group(1))
             line_parts.append(
-                f'<div class="log-section" id="sec-{idx}">'
+                f'<div class="log-section" id="L{idx + 1}">'
                 f'<span class="ln">{idx + 1:6d}</span> '
                 f'<span class="section-title">═══ {title} ═══</span></div>'
             )
@@ -744,7 +939,12 @@ def write_log_html(log_path: str, finding: Finding, out_path: str) -> None:
         ev = _is_evidence(raw_line)
         row_cls = ' class="ev-line"' if ev else ""
         highlighted = _highlight_log_line_html(raw_line, versions)
-        line_parts.append(f'<div{row_cls}><span class="ln">{idx + 1:6d}</span> {highlighted}</div>')
+        line_parts.append(f'<div{row_cls} id="L{idx + 1}"><span class="ln">{idx + 1:6d}</span> {highlighted}</div>')
+        if ev:
+            clean = _LOG_ANSI_RE.sub("", stripped)
+            if len(clean) > 160:
+                clean = clean[:157] + "..."
+            evidence_lines.append((idx + 1, clean))
 
     banner_html = ""
     if in_window and window_name:
@@ -816,6 +1016,7 @@ def write_log_html(log_path: str, finding: Finding, out_path: str) -> None:
         "<span class='hl-version' style='padding:1px 4px;font-family:monospace'>version</span> numbers, and "
         "<span class='hl-action' style='padding:1px 4px;font-family:monospace'>action refs</span> are highlighted inline.",
         "  </div>",
+        _build_evidence_summary_html(evidence_lines),
         '  <div class="log-body">',
         "".join(line_parts),
         "  </div>",

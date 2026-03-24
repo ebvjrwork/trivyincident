@@ -1,6 +1,23 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Dict, Tuple
 
 SEVERITY_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "INFO": 1}
+
+EXPOSURE_WINDOWS: Dict[str, Tuple[datetime, datetime]] = {
+    "trivy": (
+        datetime(2026, 3, 19, 18, 22, tzinfo=timezone.utc),
+        datetime(2026, 3, 19, 21, 42, tzinfo=timezone.utc),
+    ),
+    "trivy-action": (
+        datetime(2026, 3, 19, 17, 43, tzinfo=timezone.utc),
+        datetime(2026, 3, 20, 5, 40, tzinfo=timezone.utc),
+    ),
+    "setup-trivy": (
+        datetime(2026, 3, 19, 17, 43, tzinfo=timezone.utc),
+        datetime(2026, 3, 19, 21, 44, tzinfo=timezone.utc),
+    ),
+}
 
 
 @dataclass

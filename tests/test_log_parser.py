@@ -80,6 +80,80 @@ class LogParserTests(unittest.TestCase):
         self.assertEqual(finding.severity_trigger, "ioc-hit")
         self.assertIn("workflow-sha:aquasecurity/trivy-action", finding.ioc_match)
 
+    def test_action_ref_high_only_inside_exposure_window(self) -> None:
+        """trivy-action with mutable tag should be HIGH only inside exposure window."""
+        set_indicator_sets(set(), set(), set())
+
+        # Inside trivy-action exposure window (2026-03-19 17:43 – 2026-03-20 05:40 UTC)
+        content_in = (
+            "2026-03-19T20:00:00Z run\n"
+            "Download action repository 'aquasecurity/trivy-action@0.28.0' (SHA:" + "b" * 40 + ")\n"
+        )
+        path_in = self._write_temp_log(content_in)
+        run_in = RunInfo(
+            repo="org/repo", run_id=100, run_number=1,
+            created_at="2026-03-19T20:00:00Z", workflow_name="ci",
+            conclusion="success", status="completed",
+        )
+        finding_in = parse_log_for_finding(run_in, path_in)
+        self.assertIsNotNone(finding_in)
+        self.assertEqual(finding_in.severity, "HIGH")
+        self.assertIn("action-ref-risk:", finding_in.severity_trigger)
+
+    def test_action_ref_downgraded_outside_exposure_window(self) -> None:
+        """trivy-action with mutable tag should be MEDIUM outside exposure window."""
+        set_indicator_sets(set(), set(), set())
+
+        # Outside exposure window (2026-03-19 10:00 — hours before compromise)
+        content_out = (
+            "2026-03-19T10:00:00Z run\n"
+            "Download action repository 'aquasecurity/trivy-action@0.28.0' (SHA:" + "c" * 40 + ")\n"
+        )
+        path_out = self._write_temp_log(content_out)
+        run_out = RunInfo(
+            repo="org/repo", run_id=101, run_number=1,
+            created_at="2026-03-19T10:00:00Z", workflow_name="ci",
+            conclusion="success", status="completed",
+        )
+        finding_out = parse_log_for_finding(run_out, path_out)
+        self.assertIsNotNone(finding_out)
+        self.assertEqual(finding_out.severity, "MEDIUM")
+        self.assertIn("outside-exposure-window", finding_out.severity_trigger)
+
+    def test_setup_trivy_high_inside_window_medium_outside(self) -> None:
+        """setup-trivy with any tag: HIGH inside window, MEDIUM outside."""
+        set_indicator_sets(set(), set(), set())
+
+        # Inside setup-trivy window (2026-03-19 17:43 – 21:44 UTC)
+        content_in = (
+            "2026-03-19T19:00:00Z run\n"
+            "Download action repository 'aquasecurity/setup-trivy@v0.2.0' (SHA:" + "d" * 40 + ")\n"
+        )
+        path_in = self._write_temp_log(content_in)
+        run_in = RunInfo(
+            repo="org/repo", run_id=200, run_number=1,
+            created_at="2026-03-19T19:00:00Z", workflow_name="ci",
+            conclusion="success", status="completed",
+        )
+        finding_in = parse_log_for_finding(run_in, path_in)
+        self.assertIsNotNone(finding_in)
+        self.assertEqual(finding_in.severity, "HIGH")
+
+        # Outside window (2026-03-19 10:00 UTC)
+        content_out = (
+            "2026-03-19T10:00:00Z run\n"
+            "Download action repository 'aquasecurity/setup-trivy@v0.2.0' (SHA:" + "e" * 40 + ")\n"
+        )
+        path_out = self._write_temp_log(content_out)
+        run_out = RunInfo(
+            repo="org/repo", run_id=201, run_number=1,
+            created_at="2026-03-19T10:00:00Z", workflow_name="ci",
+            conclusion="success", status="completed",
+        )
+        finding_out = parse_log_for_finding(run_out, path_out)
+        self.assertIsNotNone(finding_out)
+        self.assertEqual(finding_out.severity, "MEDIUM")
+
 
 if __name__ == "__main__":
     unittest.main()

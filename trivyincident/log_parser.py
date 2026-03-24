@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 from typing import List, Optional, Set, Tuple
 
-from .models import Finding, RunInfo
+from .models import Finding, RunInfo, EXPOSURE_WINDOWS
 
 MALICIOUS_WORKFLOW_SHAS: Set[str] = set()
 MALICIOUS_BINARY_SHA256: Set[str] = set()
@@ -44,7 +44,7 @@ def set_indicator_sets(workflow: Set[str], binary: Set[str], network: Set[str]) 
 def classify_usage(lines: List[str]) -> str:
     has_apt = any(APT_TRIVY_RE.search(line) for line in lines)
     has_action = any(ACTION_REF_RE.search(line) for line in lines)
-    has_download = any(DOWNLOAD_RE.search(line) for line in lines) and any(TRIVY_WORD_RE.search(line) for line in lines)
+    has_download = any(DOWNLOAD_RE.search(line) and TRIVY_WORD_RE.search(line) for line in lines)
     has_container = any(CONTAINER_RE.search(line) for line in lines)
     if has_apt:
         return "apt"
@@ -234,9 +234,37 @@ def parse_log_for_finding(run: RunInfo, log_path: str) -> Optional[Finding]:
         severity = "CRITICAL"
         severity_trigger = "ioc-hit"
     elif usage_type == "action" and action_ref_risky:
-        severity = "HIGH"
+        # Determine which component's exposure window to check
+        _window_component = None
+        for ref in action_refs:
+            if "@" not in ref:
+                continue
+            _repo = ref.rsplit("@", 1)[0].lower()
+            if _repo.endswith("/trivy-action"):
+                _window_component = "trivy-action"
+                break
+            elif _repo.endswith("/setup-trivy"):
+                _window_component = "setup-trivy"
+                break
+
+        _in_window = False
+        if _window_component and run_time_utc_value:
+            _run_dt = _normalize_timestamp(run_time_utc_value)
+            if _run_dt:
+                try:
+                    _dt = datetime.fromisoformat(_run_dt.replace("Z", "+00:00"))
+                    _w_start, _w_end = EXPOSURE_WINDOWS[_window_component]
+                    _in_window = _w_start <= _dt <= _w_end
+                except (ValueError, KeyError):
+                    pass
+
         risk_detail = ",".join(action_ref_risk_reasons[:2]) if action_ref_risk_reasons else "unknown-action-ref"
-        severity_trigger = f"action-ref-risk:{risk_detail}"
+        if _in_window:
+            severity = "HIGH"
+            severity_trigger = f"action-ref-risk:{risk_detail}"
+        else:
+            severity = "MEDIUM"
+            severity_trigger = f"baseline:outside-exposure-window:{risk_detail}"
     elif usage_type == "action" and action_ref_baseline_reasons:
         baseline_detail = ",".join(action_ref_baseline_reasons[:2])
         severity_trigger = f"baseline:{baseline_detail}"

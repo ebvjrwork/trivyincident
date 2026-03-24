@@ -401,18 +401,19 @@ def write_incident_pdf(
     story.append(Paragraph("Table of Contents", S_H1))
     toc_items = [
         "1. Executive Summary",
-        "2. Attack Overview",
-        "   2.1-2.6  Precursor, Phases, Payload, Impact",
-        "   2.7-2.9  Stolen Secrets, PAT Scope, Deception Techniques",
-        "   2.10     Technical Deep Dive: Exploit Code Analysis",
-        "3. Attack Flow Diagram",
-        "4. Exposure Windows",
-        "5. Timeline & Findings",
-        "6. Indicators of Compromise (IOCs)",
-        "7. Affected Repositories",
-        "8. Detailed Findings",
-        "9. Remediation Guidance",
-        "10. References",
+        "2. Severity Classification",
+        "3. Attack Overview",
+        "   3.1-3.6  Precursor, Phases, Payload, Impact",
+        "   3.7-3.9  Stolen Secrets, PAT Scope, Deception Techniques",
+        "   3.10     Technical Deep Dive: Exploit Code Analysis",
+        "4. Attack Flow Diagram",
+        "5. Exposure Windows",
+        "6. Timeline & Findings",
+        "7. Indicators of Compromise (IOCs)",
+        "8. Affected Repositories",
+        "9. Detailed Findings",
+        "10. Remediation Guidance",
+        "11. References",
     ]
     for item in toc_items:
         story.append(Paragraph(item, S_BODY))
@@ -475,10 +476,61 @@ def write_incident_pdf(
     ))
     story.append(PageBreak())
 
-    # ── 2. ATTACK OVERVIEW ────────────────────────────────────────────────
-    story.append(Paragraph("2. Attack Overview", S_H1))
+    # ── 2. SEVERITY CLASSIFICATION ─────────────────────────────────────────
+    story.append(Paragraph("2. Severity Classification", S_H1))
+    story.append(Paragraph(
+        "Each finding is assigned a severity level based on the evidence observed in the "
+        "workflow run log. The classification criteria are as follows:",
+        S_BODY,
+    ))
+    story.append(Spacer(1, 6))
 
-    story.append(Paragraph("2.1 Precursor: First Compromise (February 28, 2026)", S_H2))
+    sev_class_headers = ["Severity", "Trigger", "Criteria"]
+    sev_class_rows = [
+        [_severity_badge("CRITICAL"), "IOC Hit",
+         "A known Indicator of Compromise was matched in the log. This includes: "
+         "(a) a workflow commit SHA matching the malicious SHA database (workflow-sha.db), "
+         "(b) a binary SHA-256 hash matching the malicious binary database (binary-sha256.db), "
+         "(c) a network indicator matching the IOC database (network-ioc.db), such as the C2 domain "
+         "scan.aquasecurtiy.org or the Cloudflare Tunnel endpoint, or "
+         "(d) a known malicious Trivy version (v0.69.4, v0.69.5, or v0.69.6) detected in the log. "
+         "These findings indicate direct evidence of compromise."],
+        [_severity_badge("HIGH"), "Action Ref Risk",
+         "The workflow used aquasecurity/trivy-action or aquasecurity/setup-trivy with a mutable "
+         "version tag that falls within the compromised range, AND the run executed during the "
+         "component's exposure window (trivy-action: 2026-03-19 17:43 \u2013 2026-03-20 05:40 UTC; "
+         "setup-trivy: 2026-03-19 17:43 \u2013 21:44 UTC). Specifically: trivy-action pinned "
+         "to any tag other than 0.35.0 (the only unaffected version, protected by immutable "
+         "releases), or setup-trivy pinned to any version tag (all 7 tags were rewritten via "
+         "imposter commits). Runs using these tags outside the exposure window are downgraded to "
+         "MEDIUM because the legitimate code was in place at that time."],
+        [_severity_badge("MEDIUM"), "Baseline",
+         "Trivy was detected in the workflow run, but no direct IOC match was confirmed. "
+         "This covers: (a) actions pinned by SHA to "
+         "a commit not in the malicious database, (b) trivy-action@0.35.0 (known safe), "
+         "(c) apt/RPM-installed Trivy where the installed version was not confirmed malicious, "
+         "(d) binary downloads or container usage without confirmed malicious hashes, "
+         "(e) runs using a risky mutable action tag (e.g., trivy-action@0.28.0) but executed "
+         "outside the exposure window \u2014 the legitimate code was still in place at that time. "
+         "These findings warrant manual review but do not indicate confirmed compromise."],
+    ]
+    story.append(_make_table(sev_class_headers, sev_class_rows, col_widths=[70, 80, 320]))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        "The severity classification is determined automatically by the log parser. "
+        "A finding's <b>Severity Trigger</b> field (visible in the Detailed Findings section) "
+        "shows the specific reason for the assigned severity, such as "
+        "<font name='Courier'>ioc-hit</font>, "
+        "<font name='Courier'>action-ref-risk:&lt;details&gt;</font>, or "
+        "<font name='Courier'>baseline:&lt;details&gt;</font>.",
+        S_BODY,
+    ))
+    story.append(PageBreak())
+
+    # ── 3. ATTACK OVERVIEW ────────────────────────────────────────────────
+    story.append(Paragraph("3. Attack Overview", S_H1))
+
+    story.append(Paragraph("3.1 Precursor: First Compromise (February 28, 2026)", S_H2))
     story.append(Paragraph(_cite_link(
         "On February 27, 2026, GitHub user <b>MegaGame10418</b> (GitHub ID 255326329, since "
         "banned) was flagged by Package Threat Hunter for suspicious fork activity targeting "
@@ -503,7 +555,7 @@ def write_incident_pdf(
         S_BODY,
     ))
 
-    story.append(Paragraph("2.2 Second Compromise (March 19, 2026)", S_H2))
+    story.append(Paragraph("3.2 Second Compromise (March 19, 2026)", S_H2))
     story.append(Paragraph(
         "Three weeks later, through a re-entry vector still under investigation, "
         "the attacker launched a coordinated multi-phase supply-chain attack:",
@@ -511,7 +563,7 @@ def write_incident_pdf(
     ))
 
     story.append(Spacer(1, 6))
-    story.append(Paragraph("2.3 Attack Phases", S_H2))
+    story.append(Paragraph("3.3 Attack Phases", S_H2))
 
     story.append(Paragraph("<b>Phase 1 — Imposter Commits &amp; Malicious Release</b>", S_H3))
     story.append(Paragraph(_cite_link(
@@ -594,7 +646,7 @@ def write_incident_pdf(
     ))
     story.append(Spacer(1, 4))
 
-    story.append(Paragraph("2.4 Payload Analysis", S_H2))
+    story.append(Paragraph("3.4 Payload Analysis", S_H2))
     story.append(Paragraph(
         "The credential stealer operated in three stages:",
         S_BODY,
@@ -644,7 +696,7 @@ def write_incident_pdf(
         S_BODY,
     ))
 
-    story.append(Paragraph("2.5 Subsequent Phases (Post March 20)", S_H2))
+    story.append(Paragraph("3.5 Subsequent Phases (Post March 20)", S_H2))
     story.append(Paragraph(
         "The attack continued to evolve after the initial compromise window:",
         S_BODY,
@@ -683,7 +735,7 @@ def write_incident_pdf(
         story.append(Paragraph(_cite_link(f"\u2022 {item}"), S_BULLET))
         story.append(Spacer(1, 2))
 
-    story.append(Paragraph("2.6 Impact", S_H2))
+    story.append(Paragraph("3.6 Impact", S_H2))
     story.append(Paragraph(_cite_link(
         "Only secrets explicitly referenced in the workflow (via <font name='Courier'>"
         "${{ secrets.* }}</font>) are loaded into Runner.Worker memory [5]. If your workflow "
@@ -705,7 +757,7 @@ def write_incident_pdf(
         story.append(Paragraph(f"\u2022 {item}", S_BULLET))
 
     story.append(Spacer(1, 8))
-    story.append(Paragraph("2.7 Secrets Exposed During the Release Build", S_H2))
+    story.append(Paragraph("3.7 Secrets Exposed During the Release Build", S_H2))
     story.append(Paragraph(_cite_link(
         "The poisoned Release workflow passed several high-value secrets, all available to "
         "the imposter checkout's composite action [3]:"),
@@ -723,7 +775,7 @@ def write_incident_pdf(
     story.append(_make_table(secrets_table_headers, secrets_table_rows, col_widths=[140, 330]))
     story.append(Spacer(1, 8))
 
-    story.append(Paragraph("2.8 Stolen PAT Scope Analysis", S_H2))
+    story.append(Paragraph("3.8 Stolen PAT Scope Analysis", S_H2))
     story.append(Paragraph(_cite_link(
         "The attacker's actions reveal the stolen PAT had broad cross-repository "
         "permissions [3]. The cross-repo write access and discussion deletion capability "
@@ -742,7 +794,7 @@ def write_incident_pdf(
     story.append(_make_table(pat_headers, pat_rows, col_widths=[130, 100, 240]))
     story.append(Spacer(1, 8))
 
-    story.append(Paragraph("2.9 Deception Techniques", S_H2))
+    story.append(Paragraph("3.9 Deception Techniques", S_H2))
     story.append(Paragraph(_cite_link(
         "The attacker employed numerous deception techniques to avoid detection [3]:"),
         S_BODY,
@@ -768,9 +820,9 @@ def write_incident_pdf(
     story.append(PageBreak())
 
     # ── TECHNICAL DEEP DIVE ───────────────────────────────────────────────
-    story.append(Paragraph("2.10 Technical Deep Dive: Exploit Code Analysis", S_H1))
+    story.append(Paragraph("3.10 Technical Deep Dive: Exploit Code Analysis", S_H1))
 
-    story.append(Paragraph("2.10.1 Imposter Checkout Action (actions/checkout @ 70379aad)", S_H2))
+    story.append(Paragraph("3.10.1 Imposter Checkout Action (actions/checkout @ 70379aad)", S_H2))
     story.append(Paragraph(_cite_link(
         "The imposter commit in <font name='Courier'>actions/checkout</font> replaced the "
         "legitimate Node.js action with a composite action [3]. After performing a real checkout "
@@ -805,7 +857,7 @@ def write_incident_pdf(
     ))
     story.append(Spacer(1, 6))
 
-    story.append(Paragraph("2.10.2 Release Workflow Diff (aquasecurity/trivy @ 1885610c)", S_H2))
+    story.append(Paragraph("3.10.2 Release Workflow Diff (aquasecurity/trivy @ 1885610c)", S_H2))
     story.append(Paragraph(_cite_link(
         "The imposter commit in <font name='Courier'>aquasecurity/trivy</font> touched only "
         "two workflow files (<font name='Courier'>.github/workflows/release.yaml</font> and "
@@ -843,7 +895,7 @@ def write_incident_pdf(
     ))
     story.append(Spacer(1, 6))
 
-    story.append(Paragraph("2.10.3 Credential Stealer Code (entrypoint.sh / action.yaml)", S_H2))
+    story.append(Paragraph("3.10.3 Credential Stealer Code (entrypoint.sh / action.yaml)", S_H2))
     story.append(Paragraph(_cite_link(
         "The three-stage credential stealer was injected as 105 lines prepended to "
         "<font name='Courier'>entrypoint.sh</font> (trivy-action) and "
@@ -1008,7 +1060,7 @@ def write_incident_pdf(
     ))
     story.append(Spacer(1, 4))
 
-    story.append(Paragraph("2.10.4 Malicious Binary Persistence (v0.69.4, non-CI)", S_H2))
+    story.append(Paragraph("3.10.4 Malicious Binary Persistence (v0.69.4, non-CI)", S_H2))
     story.append(Paragraph(_cite_link(
         "When the compiled malicious trivy binary detected it was running outside GitHub "
         "Actions (<font name='Courier'>GITHUB_ACTIONS != \"true\"</font>), it installed a "
@@ -1047,8 +1099,8 @@ def write_incident_pdf(
 
     story.append(PageBreak())
 
-    # ── 3. ATTACK FLOW DIAGRAM ────────────────────────────────────────────
-    story.append(Paragraph("3. Attack Flow Diagram", S_H1))
+    # ── 4. ATTACK FLOW DIAGRAM ────────────────────────────────────────────
+    story.append(Paragraph("4. Attack Flow Diagram", S_H1))
     story.append(Spacer(1, 8))
     story.append(_build_attack_flow_diagram())
     story.append(Spacer(1, 12))
@@ -1063,8 +1115,8 @@ def write_incident_pdf(
     ))
     story.append(PageBreak())
 
-    # ── 4. EXPOSURE WINDOWS ───────────────────────────────────────────────
-    story.append(Paragraph("4. Exposure Windows", S_H1))
+    # ── 5. EXPOSURE WINDOWS ───────────────────────────────────────────────
+    story.append(Paragraph("5. Exposure Windows", S_H1))
     story.append(Paragraph(
         "The following table details the exposure windows for each affected component. "
         "Any workflow run that executed during these windows with the affected versions "
@@ -1094,18 +1146,10 @@ def write_incident_pdf(
     story.append(_make_table(ew_headers, ew_rows, col_widths=[60, 130, 110, 120, 50]))
     story.append(PageBreak())
 
-    # ── 5. TIMELINE ───────────────────────────────────────────────────────
-    story.append(Paragraph("5. Timeline &amp; Findings", S_H1))
+    # ── 6. TIMELINE ───────────────────────────────────────────────────────
+    story.append(Paragraph("6. Timeline &amp; Findings", S_H1))
     story.append(Spacer(1, 8))
     story.append(_build_timeline_diagram(findings))
-    story.append(Paragraph(_cite_link(
-        "<b>Note on Homebrew:</b> Homebrew's BrewTestBot automatically opened a PR to bump trivy "
-        "to v0.69.4 (merged at ~19:36 UTC), but Homebrew builds from the source tarball, not "
-        "from GitHub Actions artifacts [3][12]. The poisoned commit only modified workflow YAML files; the "
-        "Go source code in the tarball was clean. Homebrew bottles were <b>not</b> backdoored [3]. "
-        "The formula was still downgraded to v0.69.3 as a precaution [12]."),
-        S_BODY,
-    ))
     story.append(Spacer(1, 8))
     timeline_events = [
         ("2026-03-17", "Attacker registers typosquat domain aquasecurtiy.org via Spaceship, Inc.; Let's Encrypt certs for scan.aquasecurtiy.org issued within 50 minutes [4]."),
@@ -1130,8 +1174,8 @@ def write_incident_pdf(
     story.append(_make_table(tl_headers, timeline_events, col_widths=[130, 340]))
     story.append(PageBreak())
 
-    # ── 6. IOCs ───────────────────────────────────────────────────────────
-    story.append(Paragraph("6. Indicators of Compromise (IOCs)", S_H1))
+    # ── 7. IOCs ───────────────────────────────────────────────────────────
+    story.append(Paragraph("7. Indicators of Compromise (IOCs)", S_H1))
 
     # Collect all IOC matches from findings, grouped by type
     ioc_binary: set = set()
@@ -1161,7 +1205,7 @@ def write_incident_pdf(
         ))
     else:
         if ioc_binary:
-            story.append(Paragraph("6.1 Malicious Binary SHA-256 Hashes", S_H2))
+            story.append(Paragraph("7.1 Malicious Binary SHA-256 Hashes", S_H2))
             story.append(Paragraph(
                 f"The following {len(ioc_binary)} malicious binary hash(es) were observed in scan findings:",
                 S_BODY,
@@ -1172,7 +1216,7 @@ def write_incident_pdf(
 
         if ioc_network:
             story.append(Paragraph(
-                "6.2 Network IOCs" if ioc_binary else "6.1 Network IOCs", S_H2))
+                "7.2 Network IOCs" if ioc_binary else "7.1 Network IOCs", S_H2))
             story.append(Paragraph(
                 f"The following {len(ioc_network)} network indicator(s) were observed in scan findings:",
                 S_BODY,
@@ -1182,7 +1226,7 @@ def write_incident_pdf(
             story.append(Spacer(1, 8))
 
         if ioc_workflow:
-            sub = "6.3" if (ioc_binary and ioc_network) else "6.2" if (ioc_binary or ioc_network) else "6.1"
+            sub = "7.3" if (ioc_binary and ioc_network) else "7.2" if (ioc_binary or ioc_network) else "7.1"
             story.append(Paragraph(f"{sub} Malicious Workflow Commit SHAs", S_H2))
             story.append(Paragraph(
                 f"The following {len(ioc_workflow)} malicious commit SHA(s) were observed in scan findings:",
@@ -1193,8 +1237,8 @@ def write_incident_pdf(
 
     story.append(PageBreak())
 
-    # ── 7. AFFECTED REPOSITORIES ──────────────────────────────────────────
-    story.append(Paragraph("7. Affected Repositories", S_H1))
+    # ── 8. AFFECTED REPOSITORIES ──────────────────────────────────────────
+    story.append(Paragraph("8. Affected Repositories", S_H1))
 
     if not findings:
         story.append(Paragraph(
@@ -1226,8 +1270,8 @@ def write_incident_pdf(
 
     story.append(PageBreak())
 
-    # ── 8. DETAILED FINDINGS ──────────────────────────────────────────────
-    story.append(Paragraph("8. Detailed Findings", S_H1))
+    # ── 9. DETAILED FINDINGS ──────────────────────────────────────────────
+    story.append(Paragraph("9. Detailed Findings", S_H1))
 
     if not findings:
         story.append(Paragraph("<i>No findings to report.</i>", S_BODY))
@@ -1280,10 +1324,10 @@ def write_incident_pdf(
 
     story.append(PageBreak())
 
-    # ── 9. REMEDIATION ────────────────────────────────────────────────────
-    story.append(Paragraph("9. Remediation Guidance", S_H1))
+    # ── 10. REMEDIATION ───────────────────────────────────────────────────
+    story.append(Paragraph("10. Remediation Guidance", S_H1))
 
-    story.append(Paragraph("9.1 Immediate Actions", S_H2))
+    story.append(Paragraph("10.1 Immediate Actions", S_H2))
     immediate = [
         "<b>Rotate all secrets</b> that were exposed as environment variables in affected CI runs. "
         "This includes GitHub tokens, cloud credentials, API keys, and registry passwords.",
@@ -1308,7 +1352,7 @@ def write_incident_pdf(
         story.append(Paragraph(_cite_link(f"• {item}"), S_BULLET))
 
     story.append(Spacer(1, 8))
-    story.append(Paragraph("9.2 Preventive Measures", S_H2))
+    story.append(Paragraph("10.2 Preventive Measures", S_H2))
     preventive = [
         "<b>Pin GitHub Actions by full SHA</b> instead of mutable version tags to prevent "
         "tag-based supply-chain attacks.",
@@ -1326,8 +1370,8 @@ def write_incident_pdf(
 
     story.append(PageBreak())
 
-    # ── 10. REFERENCES ────────────────────────────────────────────────────
-    story.append(Paragraph("10. References", S_H1))
+    # ── 11. REFERENCES ────────────────────────────────────────────────────
+    story.append(Paragraph("11. References", S_H1))
     refs = [
         ("Aqua Security Official Discussion",
          "https://github.com/aquasecurity/trivy/discussions/10425"),
