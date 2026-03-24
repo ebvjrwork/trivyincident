@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Set, Tuple
 
 from trivyincident.github_ops import (
+    check_audit_log_repo_create,
     download_run_log,
     ensure_prereqs,
     get_rate_limit,
@@ -23,6 +24,7 @@ from trivyincident.log_parser import (
     set_indicator_sets,
 )
 from trivyincident.models import Finding, RunInfo
+from trivyincident.pdf_report import write_incident_pdf
 from trivyincident.reporting import write_flags_file, write_results_html, write_log_html
 
 
@@ -230,6 +232,39 @@ def main() -> int:
         if finding:
             findings.append(finding)
 
+    # ── Phase 4: audit-log IOC — tpcp-docs repo creation ──────────────────────
+    if not args.skip_run_listing:
+        audit_entries = check_audit_log_repo_create(args.org, "tpcp-docs")
+        if audit_entries:
+            for entry in audit_entries:
+                ts = entry.get("@timestamp", entry.get("created_at", ""))
+                if isinstance(ts, (int, float)):
+                    ts = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
+                actor = entry.get("actor", "unknown")
+                snippet = f"audit-log: action=repo.create repo={args.org}/tpcp-docs actor={actor} timestamp={ts}"
+                findings.append(Finding(
+                    repository=f"{args.org}/tpcp-docs",
+                    run_id=0,
+                    run_time_utc=str(ts),
+                    workflow="audit-log",
+                    trivy_detected="no",
+                    usage_type="audit-log",
+                    action_ref="",
+                    resolved_sha="",
+                    version="",
+                    hash_digest_seen="",
+                    ioc_match="audit-log:repo.create:tpcp-docs",
+                    apt_0694_flag="no",
+                    severity="CRITICAL",
+                    severity_trigger="audit-log-ioc:tpcp-docs-repo-created",
+                    log_path="",
+                    evidence_snippet=snippet,
+                    trivy_details="tpcp-docs repository created — known TeamPCP exfiltration target",
+                ))
+            print(f"audit-log: {len(audit_entries)} tpcp-docs repo.create event(s) found (CRITICAL IOC)", flush=True)
+        else:
+            print("audit-log: no tpcp-docs repo.create events found", flush=True)
+
     results_dir = args.results_dir.strip() or "results"
     html_report_path = os.path.join(results_dir, "results.html")
 
@@ -261,6 +296,19 @@ def main() -> int:
         all_runs=all_runs,
         log_html_root=log_html_root if args.generate_log_html else None,
     )
+
+    # Generate incident detail PDF
+    pdf_path = os.path.join(results_dir, "incident-report.pdf")
+    write_incident_pdf(
+        output_path=pdf_path,
+        org=args.org,
+        run_start_iso=start_iso,
+        run_end_iso=end_iso,
+        repos_scanned=repos_scanned,
+        total_runs=len(all_runs),
+        findings=findings,
+    )
+    print(f"pdf report: {pdf_path}")
 
     flags_file = os.path.join(args.logs_root, "flags.txt")
     write_flags_file(flags_file, findings)

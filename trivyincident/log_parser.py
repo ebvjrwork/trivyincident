@@ -138,12 +138,13 @@ def parse_log_for_finding(run: RunInfo, log_path: str) -> Optional[Finding]:
     if not trivy_lines_idx:
         return None
 
+    MALICIOUS_TRIVY_VERSIONS = {"0.69.4", "0.69.5", "0.69.6"}
+
     action_refs: List[str] = []
     resolved_shas: Set[str] = set()
     versions: Set[str] = set()
     hash_seen: Set[str] = set()
     ioc_hits: Set[str] = set()
-    apt_0694 = False
     trivy_action_downloads: List[Tuple[str, str, str]] = []
 
     for line in lines:
@@ -174,11 +175,7 @@ def parse_log_for_finding(run: RunInfo, log_path: str) -> Optional[Finding]:
         if TRIVY_WORD_RE.search(line):
             for vm in TRIVY_VERSION_RE.finditer(line):
                 versions.add(vm.group(1))
-        if APT_TRIVY_RE.search(line):
-            if "0.69.4" in line:
-                apt_0694 = True
-            if re.search(r"\btrivy\s*=\s*0\.69\.4\b", line, re.IGNORECASE):
-                apt_0694 = True
+
 
     usage_type = classify_usage(lines)
 
@@ -186,10 +183,10 @@ def parse_log_for_finding(run: RunInfo, log_path: str) -> Optional[Finding]:
         apt_versions = extract_apt_trivy_versions(lines)
         if apt_versions:
             versions = apt_versions
-        if "0.69.4" in versions:
-            apt_0694 = True
-    elif "0.69.4" in versions and any(APT_TRIVY_RE.search(line) for line in lines):
-        apt_0694 = True
+
+    # Flag any malicious Trivy version as an IOC hit
+    for v in versions & MALICIOUS_TRIVY_VERSIONS:
+        ioc_hits.add(f"malicious-version:{v}")
 
     if usage_type == "action" and trivy_action_downloads:
         dedup_downloads: List[Tuple[str, str, str]] = []
@@ -236,16 +233,10 @@ def parse_log_for_finding(run: RunInfo, log_path: str) -> Optional[Finding]:
     if ioc_hits:
         severity = "CRITICAL"
         severity_trigger = "ioc-hit"
-    elif apt_0694 or (usage_type == "action" and action_ref_risky):
+    elif usage_type == "action" and action_ref_risky:
         severity = "HIGH"
-        if apt_0694 and usage_type == "action" and action_ref_risky:
-            risk_detail = ",".join(action_ref_risk_reasons[:2]) if action_ref_risk_reasons else "unknown-action-ref"
-            severity_trigger = f"apt-0.69.4+action-ref-risk:{risk_detail}"
-        elif apt_0694:
-            severity_trigger = "apt-0.69.4"
-        else:
-            risk_detail = ",".join(action_ref_risk_reasons[:2]) if action_ref_risk_reasons else "unknown-action-ref"
-            severity_trigger = f"action-ref-risk:{risk_detail}"
+        risk_detail = ",".join(action_ref_risk_reasons[:2]) if action_ref_risk_reasons else "unknown-action-ref"
+        severity_trigger = f"action-ref-risk:{risk_detail}"
     elif usage_type == "action" and action_ref_baseline_reasons:
         baseline_detail = ",".join(action_ref_baseline_reasons[:2])
         severity_trigger = f"baseline:{baseline_detail}"
@@ -268,6 +259,9 @@ def parse_log_for_finding(run: RunInfo, log_path: str) -> Optional[Finding]:
             elif token.startswith("network:"):
                 marker = token.split(":", 1)[1]
                 collect_indices(lambda line, m=marker: m in line.lower())
+            elif token.startswith("malicious-version:"):
+                ver = token.split(":", 1)[1]
+                collect_indices(lambda line, v=ver: v in line and TRIVY_WORD_RE.search(line) is not None)
 
     if usage_type == "action":
         collect_indices(
@@ -344,7 +338,7 @@ def parse_log_for_finding(run: RunInfo, log_path: str) -> Optional[Finding]:
         version=version_value,
         hash_digest_seen=hash_value,
         ioc_match=ioc_value,
-        apt_0694_flag="yes" if apt_0694 else "no",
+        apt_0694_flag="no",
         severity=severity,
         severity_trigger=severity_trigger,
         log_path=log_path,

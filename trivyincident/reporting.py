@@ -87,8 +87,9 @@ def finding_exposure_match(finding: Finding) -> bool:
                 component = "setup-trivy"
                 break
     else:
-        has_0694 = finding.apt_0694_flag == "yes" or any(v == "0.69.4" for v in versions) or "0.69.4" in detail_text
-        if has_0694:
+        malicious_versions = {"0.69.4", "0.69.5", "0.69.6"}
+        has_malicious = any(v in malicious_versions for v in versions) or any(v in detail_text for v in malicious_versions)
+        if has_malicious:
             component = "trivy"
 
     if not component:
@@ -826,7 +827,7 @@ def write_log_html(log_path: str, finding: Finding, out_path: str) -> None:
 
 
 def write_flags_file(flags_path: str, findings: List[Finding]) -> None:
-    flagged = [x for x in findings if x.severity in {"CRITICAL", "HIGH"} or x.apt_0694_flag == "yes"]
+    flagged = [x for x in findings if x.severity in {"CRITICAL", "HIGH"}]
     with open(flags_path, "w", encoding="utf-8") as f:
         for item in sorted(flagged, key=lambda x: (-SEVERITY_RANK[x.severity], x.repository, x.run_id)):
-            f.write(f"{item.severity}\t{item.repository}\t{item.run_id}\tapt0.69.4={item.apt_0694_flag}\t{item.log_path}\n")
+            f.write(f"{item.severity}\t{item.repository}\t{item.run_id}\t{item.ioc_match or '-'}\t{item.log_path}\n")

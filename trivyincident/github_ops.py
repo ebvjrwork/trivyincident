@@ -156,3 +156,21 @@ def download_run_log(repo_full_name: str, run_id: int, output_path: str, retries
             continue
         return False, err, 0
     return False, "unknown error", 0
+
+
+def check_audit_log_repo_create(org: str, repo_name: str) -> List[dict]:
+    """Query the org audit log for repo.create events matching *repo_name*.
+
+    Returns a list of matching audit-log entries (dicts), or an empty list
+    if nothing was found or the API call failed.
+    """
+    phrase = f"action:repo.create repo:{org}/{repo_name}"
+    try:
+        data = run_gh_json(
+            ["api", f"orgs/{org}/audit-log", "-f", f"phrase={phrase}", "-f", "per_page=100"]
+        )
+    except RuntimeError:
+        return []
+    if isinstance(data, list):
+        return data
+    return []

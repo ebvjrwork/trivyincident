@@ -33,25 +33,26 @@ class LogParserTests(unittest.TestCase):
         path = self._write_temp_log("===== 2_release-check.txt =====\nother line\n")
         self.assertEqual(extract_workflow_name_from_file(path), "release-check")
 
-    def test_parse_log_marks_apt_0694_high(self) -> None:
+    def test_parse_log_marks_malicious_version_critical(self) -> None:
         set_indicator_sets(set(), set(), set())
-        content = "2026-03-21T11:22:33Z run\napt-get install -y trivy=0.69.4\n"
-        path = self._write_temp_log(content)
-        run = RunInfo(
-            repo="org/repo",
-            run_id=123,
-            run_number=1,
-            created_at="",
-            workflow_name="wf",
-            conclusion="success",
-            status="completed",
-        )
+        for ver in ("0.69.4", "0.69.5", "0.69.6"):
+            content = f"2026-03-21T11:22:33Z run\napt-get install -y trivy={ver}\n"
+            path = self._write_temp_log(content)
+            run = RunInfo(
+                repo="org/repo",
+                run_id=123,
+                run_number=1,
+                created_at="",
+                workflow_name="wf",
+                conclusion="success",
+                status="completed",
+            )
 
-        finding = parse_log_for_finding(run, path)
-        self.assertIsNotNone(finding)
-        self.assertEqual(finding.usage_type, "apt")
-        self.assertEqual(finding.severity, "HIGH")
-        self.assertEqual(finding.severity_trigger, "apt-0.69.4")
+            finding = parse_log_for_finding(run, path)
+            self.assertIsNotNone(finding, f"No finding for version {ver}")
+            self.assertEqual(finding.usage_type, "apt")
+            self.assertEqual(finding.severity, "CRITICAL", f"Version {ver} should be CRITICAL")
+            self.assertIn(f"malicious-version:{ver}", finding.ioc_match)
 
     def test_parse_log_marks_ioc_hit_critical(self) -> None:
         malicious_sha = "a" * 40

@@ -31,9 +31,12 @@
   - Malicious workflow commit SHAs
   - Malicious binary SHA256 digests
   - Suspicious network indicators
+  - Malicious Trivy versions (0.69.4, 0.69.5, 0.69.6)
+- Checks the organization audit log for `tpcp-docs` repository creation (a known TeamPCP exfiltration indicator).
 - Assigns severity and trigger rationale per finding.
 - Produces all output in the `results/` directory:
   - `results/results.html` — interactive HTML report with sort controls, exposure window highlighting, and severity badges
+  - `results/incident-report.pdf` — detailed incident PDF covering attack overview, flow diagrams, exposure windows, IOCs, affected repos, and remediation guidance
   - `results/logs/` — per-finding annotated log HTML files with evidence highlighted (when `--generate-log-html` is used)
   - `logs/flags.txt` — high-priority flat list for rapid escalation
 
@@ -49,9 +52,10 @@
 - `trivyincident.py` – CLI entrypoint/orchestrator.
 - `trivyincident/` – reusable package modules:
   - `github_ops.py` – GitHub CLI/API operations.
-  - `indicators.py` – IOC DB loading.
+  - `indicators.py` – IOC DB loading and auto-update.
   - `log_parser.py` – extraction, matching, severity logic.
   - `reporting.py` – HTML report and flags generation.
+  - `pdf_report.py` – incident detail PDF generation.
   - `models.py` – dataclasses and severity ranking.
 - `db/` – IOC databases.
 - `tests/` – unit tests for parser and indicators.
@@ -69,7 +73,42 @@ Format: one IOC per line (comments with `#` allowed).
 ## Requirements
 
 - Python 3.10+
+- `reportlab` — `pip install reportlab` (for PDF report generation)
 - GitHub CLI (`gh`) authenticated (`gh auth login`) for live collection mode
+- **Organization audit log access** — the authenticated user must have access to the organization's audit log (organization owner or audit log reader role) for the `tpcp-docs` repo-creation IOC check
+
+## Quick start (step by step)
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/ebvjrwork/trivyincident.git
+cd trivyincident
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Authenticate with GitHub CLI (if not already)
+gh auth login
+
+# 4. Verify your GitHub auth works and you have org audit log access
+gh auth status
+gh api orgs/YOUR-ORG/audit-log -f phrase="action:repo.create" -f per_page=1
+
+# 5. Run the scanner against your organization
+python3 trivyincident.py \
+  --org YOUR-ORG \
+  --start 2026-03-19T00:00:00Z \
+  --end   2026-03-22T20:00:00Z \
+  --generate-log-html
+
+# 6. Open the results
+#    - results/results.html        — interactive HTML report
+#    - results/incident-report.pdf — detailed incident PDF
+#    - results/logs/               — per-finding annotated log files
+#    - logs/flags.txt              — high-priority flat list
+```
+
+> **Note:** If the audit log API call in step 4 returns a 403, you need an org owner or audit log reader to grant access. The scanner will still work without it, but the `tpcp-docs` repo-creation IOC check will be skipped.
 
 ## Usage
 
@@ -119,8 +158,8 @@ Detection includes:
 - Known network IOC strings
 
 Severity logic:
-- **CRITICAL**: any IOC match (`ioc-hit`)
-- **HIGH**: suspicious non-IOC risk pattern (for example `apt-0.69.4` or risky action ref)
+- **CRITICAL**: any IOC match (workflow SHA, binary hash, network IOC, malicious version 0.69.4/0.69.5/0.69.6, or audit-log tpcp-docs hit)
+- **HIGH**: suspicious non-IOC risk pattern (risky action ref)
 - **MEDIUM**: baseline Trivy activity without IOC/high-risk trigger
 
 ## Report output
@@ -142,6 +181,20 @@ Row highlighting:
 - **Red row**: run time falls in a Trivy supply-chain exposure window (Trivy detected).
 - **Amber row** (All Scanned Runs only): run time in exposure window, no Trivy detected.
 
+### `results/incident-report.pdf`
+
+Comprehensive incident PDF including:
+- Executive summary with finding counts
+- Attack overview (threat actor, vector, stages, impact)
+- Supply-chain attack flow diagram
+- Exposure window reference table
+- Visual timeline with finding positions
+- IOC details (binary hashes, network IOCs, workflow commit SHAs)
+- Affected repositories summary table
+- Per-finding detail tables with evidence
+- Remediation guidance (immediate actions and preventive measures)
+- Full reference links
+
 ### `results/logs/*.html`
 
 Per-finding annotated log views with:
@@ -151,7 +204,7 @@ Per-finding annotated log views with:
 ### `logs/flags.txt`
 
 Plain-text shortlist for rapid escalation workflows.
-Each line includes severity, repository, run id, apt marker, and log path.
+Each line includes severity, repository, run id, IOC match, and log path.
 
 ## Interpreting severity quickly
 
