@@ -482,7 +482,9 @@ def write_results_html(
              '<a href="https://socket.dev/supply-chain-attacks/trivy-github-actions-compromise">socket.dev</a>, '
              '<a href="https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack">wiz.io</a>, '
              '<a href="https://github.com/aquasecurity/trivy/discussions/10425">aquasecurity/trivy#10425</a>, '
-             '<a href="https://ramimac.me/trivy-teampcp/#iocs">ramimac.me</a></div>')
+             '<a href="https://ramimac.me/trivy-teampcp/#iocs">ramimac.me</a>, '
+             '<a href="https://labs.boostsecurity.io/articles/20-days-later-trivy-compromise-act-ii/">boostsecurity.io</a>, '
+             '<a href="http://rosesecurity.dev/2026/03/20/typosquatting-trivy.html">rosesecurity.dev</a></div>')
 
     # Exposure windows reference table
     P.append('  <h2>Exposure Windows</h2>')
@@ -499,14 +501,14 @@ def write_results_html(
              '<td>~3&nbsp;hours</td></tr>')
     P.append('      <tr>'
              '<td><strong>trivy-action</strong></td>'
-             '<td>1)&nbsp;All tags prior to 0.35.0<br>2)&nbsp;Explicitly requesting <code>version:&nbsp;latest</code> (not the default) during the trivy exposure window</td>'
-             '<td>1)&nbsp;@0.35.0<br>2)&nbsp;SHA-pinned references since 2025-04-09</td>'
+             '<td>1)&nbsp;75 of 76 tags (0.0.1&ndash;0.34.2)<br>2)&nbsp;Explicitly requesting <code>version:&nbsp;latest</code> (not the default) during the trivy exposure window</td>'
+             '<td>1)&nbsp;@0.35.0 (protected by immutable releases)<br>2)&nbsp;SHA-pinned references (safe SHA: <code>57a97c7e...</code>)</td>'
              '<td>2026-03-19 ~17:43 &ndash; 2026-03-20 ~05:40</td>'
              '<td>~12&nbsp;hours</td></tr>')
     P.append('      <tr>'
              '<td><strong>setup-trivy</strong></td>'
-             '<td>All releases</td>'
-             '<td>SHA-pinned references</td>'
+             '<td>All 7 tags (v0.1.0&ndash;v0.2.5); published via GitHub API at ~22:06 UTC</td>'
+             '<td>SHA-pinned references; v0.2.6 (re-released clean)</td>'
              '<td>2026-03-19 ~17:43 &ndash; ~21:44</td>'
              '<td>~4&nbsp;hours</td></tr>')
     P.append('    </tbody>')
